@@ -50,7 +50,10 @@ RECIPES_DIR="$DIR/../recipes"
 
 BUNDLE_ID=$(defaults read "$APP_BUNDLE/Info.plist" CFBundleIdentifier 2>/dev/null || true)
 RECIPE_FILE=""
-if [ -n "$BUNDLE_ID" ] && [ -f "$RECIPES_DIR/$BUNDLE_ID.ini" ]; then
+if [ -n "$RECIPE_OVERRIDE" ] && [ -f "$RECIPE_OVERRIDE" ]; then
+    RECIPE_FILE="$RECIPE_OVERRIDE"
+    echo "[*] Using recipe override: $RECIPE_FILE"
+elif [ -n "$BUNDLE_ID" ] && [ -f "$RECIPES_DIR/$BUNDLE_ID.ini" ]; then
     RECIPE_FILE="$RECIPES_DIR/$BUNDLE_ID.ini"
     echo "[*] Using recipe: $RECIPE_FILE"
 fi
@@ -70,7 +73,7 @@ fi
 recipe_get_val() {
     local key="$1"
     [ -n "$RESOLVED_RECIPE" ] && [ -f "$RESOLVED_RECIPE" ] || return 0
-    grep -E "^[[:space:]]*$key[[:space:]]*=" "$RESOLVED_RECIPE" 2>/dev/null | head -n 1 | awk -F'=' '{print $2}' | tr -d ' \r\t"'
+    grep -E "^[[:space:]]*$key[[:space:]]*=" "$RESOLVED_RECIPE" 2>/dev/null | head -n 1 | cut -d'=' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'
 }
 
 recipe_has_flag() {
@@ -139,9 +142,110 @@ done
 # =============================================================================
 # JIT Micro-Shim Compilation: select isolated, atomic micro-modules
 # =============================================================================
+# Module resolution and dynamic discovery helpers
+add_module() {
+    local target="$1"
+    local file=""
+    if [ -f "$target" ]; then
+        file="$target"
+    elif [ -f "$MODULES_DIR/$target" ]; then
+        file="$MODULES_DIR/$target"
+    else
+        return 0
+    fi
+    for m in "${SELECTED_MODULES[@]}"; do
+        [ "$m" = "$file" ] && return 0
+    done
+    SELECTED_MODULES+=("$file")
+    return 0
+}
+
+resolve_module_file() {
+    local name="$1"
+    [ -z "$name" ] && return 0
+    local cands=("$name" "$name.m" "$name.c" "mod_${name}.m" "mod_${name}.c" "${name#mod_}.m" "${name#mod_}.c")
+    for cand in "${cands[@]}"; do
+        if [ -f "$MODULES_DIR/$cand" ]; then
+            echo "$MODULES_DIR/$cand"
+            return 0
+        fi
+    done
+    return 0
+}
+
+resolve_alias() {
+    case "$1" in
+        audio_session_fix) echo "mod_audio_legacy.m" ;;
+        statfs_spoof) echo "mod_statfs.c mod_nsurl_space.m" ;;
+        fake_mpmovieplayer) echo "mod_fake_mpmovieplayer.m mod_ascii_path_redirect.m mod_idle_timer.m mod_av_delegate.m" ;;
+        device_rotation_menu) echo "mod_d6_rotation.m" ;;
+        dyld_fishhook_suppress) echo "mod_dyld_fishhook.c" ;;
+        memory_fault_recovery|block_abort_raise|suppress_sigaction) echo "mod_fault_handler.c mod_vm_protect.c mod_signal_suppress.c" ;;
+        ubiquitous_store) echo "mod_ubiquitous.m" ;;
+        everyplay_stub|everyplay_mock) echo "mod_everyplay.m" ;;
+        game_center_auto_auth) echo "mod_gamecenter.m" ;;
+        touch_remapping) echo "mod_touch_remap.m" ;;
+        background_tasks_redirect) echo "mod_bg_classes.m mod_bg_scheduler.m mod_nsurl_upload_fix.m" ;;
+        device_spoof) echo "mod_device_spoof.c" ;;
+        window_close_exit|window_close_guard) echo "mod_window_close.m" ;;
+        *) return 1 ;;
+    esac
+}
+
+resolve_and_add() {
+    local item="$1"
+    local resolved=$(resolve_module_file "$item")
+    if [ -n "$resolved" ]; then
+        add_module "$resolved"
+    fi
+    return 0
+}
+
+handle_shim_flag() {
+    local key="$1"
+    local val="$2"
+    [[ "$val" == "true" || "$val" == "1" || "$val" == "yes" ]] || return 0
+    local alias_mods=$(resolve_alias "$key" 2>/dev/null || true)
+    if [ -n "$alias_mods" ]; then
+        for m in $alias_mods; do
+            resolve_and_add "$m"
+        done
+        return 0
+    fi
+    resolve_and_add "$key"
+    return 0
+}
+
+process_shims_section() {
+    [ -n "$RESOLVED_RECIPE" ] && [ -f "$RESOLVED_RECIPE" ] || return 0
+    local in_shims=0
+    while IFS="=" read -r raw_key raw_val || [ -n "$raw_key" ]; do
+        local key=$(echo "$raw_key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        local val=$(echo "$raw_val" | cut -d';' -f1 | cut -d'#' -f1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')
+        if [[ "$key" =~ ^\[(.*)\]$ ]]; then
+            local sec="${BASH_REMATCH[1]}"
+            [ "$sec" = "shims" ] && in_shims=1 || in_shims=0
+            continue
+        fi
+        if [ $in_shims -eq 1 ] && [ -n "$key" ]; then
+            handle_shim_flag "$key" "$val"
+        fi
+    done < "$RESOLVED_RECIPE"
+    return 0
+}
+
 SELECTED_MODULES=("$MODULES_DIR/core_keychain.c" "$MODULES_DIR/mod_window.m" "$MODULES_DIR/mod_window_close.m" "$MODULES_DIR/mod_input_context.m")
 COMPILE_FLAGS=()
-LINK_FLAGS=("-framework" "Foundation" "-framework" "Security" "-framework" "AppKit")
+LINK_FLAGS=("-framework" "Foundation" "-framework" "Security" "-framework" "AppKit" "-framework" "CoreGraphics" "-framework" "AudioToolbox" "-framework" "AVFoundation")
+
+# Process dynamic shims from recipe [shims] section
+process_shims_section
+
+RECIPE_COMPILE_FLAGS=$(recipe_get_val "compile_flags")
+[ -n "$RECIPE_COMPILE_FLAGS" ] && COMPILE_FLAGS+=($RECIPE_COMPILE_FLAGS)
+
+RECIPE_LINK_FLAGS=$(recipe_get_val "link_flags")
+[ -n "$RECIPE_LINK_FLAGS" ] && LINK_FLAGS+=($RECIPE_LINK_FLAGS)
 
 # Window configuration
 WIDTH=$(recipe_get_val "width")
@@ -181,75 +285,29 @@ fi
 # Device spoofing
 HW_MODEL=$(recipe_get_val "hardware_model")
 if [ -n "$HW_MODEL" ]; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_device_spoof.c")
+    add_module "mod_device_spoof.c"
     COMPILE_FLAGS+=("-DDEVICE_MODEL=\"$HW_MODEL\"")
 fi
 
-# Disk space spoofing (CarX, etc.)
-if recipe_has_flag "statfs_spoof"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_statfs.c" "$MODULES_DIR/mod_nsurl_space.m")
-fi
-
-# On-Demand Resources bypass (CarX, etc.)
-if recipe_has_flag "odr_bypass"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_odr_bypass.m")
-fi
-
-# Unreal Engine 3 / MPMoviePlayer / ASCII path
+# Unreal Engine 3 / ASCII path target
 ENGINE=$(recipe_get_val "engine")
 ASCII_PATH=$(recipe_get_val "ascii_path_redirect")
-if [[ "$ENGINE" == *"unreal"* ]] || recipe_has_flag "fake_mpmovieplayer" || [ -n "$ASCII_PATH" ]; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_fake_mpmovieplayer.m" "$MODULES_DIR/mod_ascii_path_redirect.m" "$MODULES_DIR/mod_idle_timer.m" "$MODULES_DIR/mod_av_delegate.m")
-    if [ -n "$ASCII_PATH" ]; then
-        COMPILE_FLAGS+=("-DASCII_PATH_TARGET=\"$ASCII_PATH\"")
-    fi
+if [[ "$ENGINE" == *"unreal"* ]] || [ -n "$ASCII_PATH" ]; then
+    handle_shim_flag "fake_mpmovieplayer" "true"
+    [ -n "$ASCII_PATH" ] && COMPILE_FLAGS+=("-DASCII_PATH_TARGET=\"$ASCII_PATH\"")
 fi
 
-# Device 6 rotation menu
-if recipe_has_flag "device_rotation_menu"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_d6_rotation.m")
-fi
-
-# Legacy audio session hooks (BADLAND)
-if recipe_has_flag "audio_session_fix"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_audio_legacy.m")
-    LINK_FLAGS+=("-framework" "AudioToolbox")
-fi
-
-# Background tasks stubs & reexport (JAVser)
+# Background tasks reexport (JAVser, etc.)
 if [ "$BG_REDIRECT" = "true" ] || strings "$MAIN_BIN" 2>/dev/null | grep -q "BGContinuedProcessingTask"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_bg_classes.m" "$MODULES_DIR/mod_bg_scheduler.m" "$MODULES_DIR/mod_nsurl_upload_fix.m")
+    handle_shim_flag "background_tasks_redirect" "true"
     LINK_FLAGS+=("-Wl,-reexport_framework,BackgroundTasks")
 fi
 
-# Dyld fishhook suppression (BADLAND, CarX)
-if recipe_has_flag "dyld_fishhook_suppress"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_dyld_fishhook.c")
-fi
-
-# Memory fault recovery & signal suppression (IB2, BADLAND)
-if recipe_has_flag "memory_fault_recovery" || recipe_has_flag "block_abort_raise" || recipe_has_flag "suppress_sigaction"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_fault_handler.c" "$MODULES_DIR/mod_vm_protect.c" "$MODULES_DIR/mod_signal_suppress.c")
-fi
-
-# Assert suppression
-if recipe_has_flag "assert_suppress"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_assert_suppress.c")
-fi
-
-# Ubiquitous key-value store (Alto's Adventure, Monument Valley)
-if recipe_has_flag "ubiquitous_store"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_ubiquitous.m")
-fi
-
-# Everyplay mock (BADLAND)
-if recipe_has_flag "everyplay_stub" || recipe_has_flag "everyplay_mock"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_everyplay.m")
-fi
-
-# GameCenter auto-auth (LIMBO)
-if recipe_has_flag "game_center_auto_auth"; then
-    SELECTED_MODULES+=("$MODULES_DIR/mod_gamecenter.m")
+if [ "$DUMP_MODULES" = "1" ]; then
+    for m in "${SELECTED_MODULES[@]}"; do
+        basename "$m"
+    done
+    exit 0
 fi
 
 # Compile JIT libshim.dylib
