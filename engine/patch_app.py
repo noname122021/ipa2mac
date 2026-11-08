@@ -257,10 +257,10 @@ def patch_app(target, output_dir=None):
             app_bundle = dest
 
         subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", app_bundle], capture_output=True)
-        logging.info("[+] Successfully patched %s in %.1fs", app_bundle, time.time() - start_time)
+        logging.info("[%5.1fs] [+] Successfully patched %s", time.time() - start_time, app_bundle)
         return app_bundle
     except Exception as e:
-        logging.error("[-] Conversion failed after %.1fs: %s", time.time() - start_time, e)
+        logging.error("[%5.1fs] [-] Conversion failed: %s", time.time() - start_time, e)
         raise
     finally:
         if temp_dir and os.path.isdir(temp_dir):
