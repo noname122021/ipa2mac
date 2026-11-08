@@ -76,8 +76,11 @@ def extract_ipa(ipa_path, dest_dir):
         raise FileNotFoundError("No .app bundle found in IPA Payload")
     return apps[0]
 
-def resolve_recipe(recipes_dir, bundle_id):
-    path = os.environ.get("RECIPE_OVERRIDE") or os.path.join(recipes_dir, f"{bundle_id}.ini")
+def resolve_recipe(recipes_dir, bundle_id, version=None):
+    override = os.environ.get("RECIPE_OVERRIDE")
+    v_path = os.path.join(recipes_dir, f"{bundle_id}@{version}.ini") if version else ""
+    default_path = os.path.join(recipes_dir, f"{bundle_id}.ini")
+    path = override or (v_path if os.path.isfile(v_path) else default_path)
     if not os.path.isfile(path):
         return None
     with open(path, "r", encoding="utf-8") as f:
@@ -214,7 +217,8 @@ def patch_app(target, output_dir=None):
             raise ValueError(f"ipa2mac requires 64-bit arm64 ({archs.strip()})")
 
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        recipe_path = resolve_recipe(os.path.join(root, "recipes"), plist.get("CFBundleIdentifier", ""))
+        app_ver = plist.get("CFBundleShortVersionString") or plist.get("CFBundleVersion")
+        recipe_path = resolve_recipe(os.path.join(root, "recipes"), plist.get("CFBundleIdentifier", ""), app_ver)
         cfg = load_recipe(recipe_path)
         if recipe_path:
             shutil.copyfile(recipe_path, os.path.join(app_bundle, "recipe.ini"))

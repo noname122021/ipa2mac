@@ -299,6 +299,25 @@ assert_suppress = 1
     finally:
         os.unlink(temp_ini2)
 
+    print("\n[*] Testing recipe versioning fallback via patch_app.py...")
+    with tempfile.TemporaryDirectory() as tmp_recipes:
+        base_ini = os.path.join(tmp_recipes, "com.test.app.ini")
+        v2_ini = os.path.join(tmp_recipes, "com.test.app@2.0.ini")
+        redir_ini = os.path.join(tmp_recipes, "com.test.app@3.0.ini")
+        with open(base_ini, "w") as f:
+            f.write("[metadata]\nname = Base\n")
+        with open(v2_ini, "w") as f:
+            f.write("[metadata]\nname = V2\n")
+        with open(redir_ini, "w") as f:
+            f.write("target_ini = com.test.app@2.0.ini\n")
+
+        assert patch_app.resolve_recipe(tmp_recipes, "com.test.app", "2.0") == v2_ini
+        assert patch_app.resolve_recipe(tmp_recipes, "com.test.app", "1.0") == base_ini
+        assert patch_app.resolve_recipe(tmp_recipes, "com.test.app") == base_ini
+        assert patch_app.resolve_recipe(tmp_recipes, "com.test.app", "3.0") == v2_ini
+        assert patch_app.resolve_recipe(tmp_recipes, "com.test.none", "1.0") is None
+        print("[+] PASSED: Recipe versioning fallback (exact -> unversioned -> None) works as expected!")
+
     if failures == 0:
         print("\n[SUCCESS] ALL VERIFICATION CHECKS PASSED (100% backward compatible)!")
         return 0
