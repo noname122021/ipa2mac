@@ -19,6 +19,20 @@ ENGINE_DIR = os.path.join(BASE_DIR, "engine")
 MODULES_DIR = os.path.join(ENGINE_DIR, "modules")
 RECIPES_DIR = os.path.join(BASE_DIR, "recipes")
 
+sys.path.insert(0, ENGINE_DIR)
+import patch_app
+
+def resolve_recipe_via_python(recipe_file):
+    bundle_id = os.path.basename(recipe_file)
+    if bundle_id.endswith(".ini"):
+        bundle_id = bundle_id[:-4]
+    resolved = patch_app.resolve_recipe(RECIPES_DIR, bundle_id) or recipe_file
+    cp = patch_app.load_recipe(resolved)
+    mods = {os.path.basename(m) for m in patch_app.collect_modules(cp, MODULES_DIR)}
+    cflags = patch_app.build_compile_flags(cp)
+    lflags = patch_app.build_link_flags(cp)
+    return mods, cflags, lflags
+
 def get_old_expected_modules(ini_path):
     with open(ini_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -220,24 +234,33 @@ printf '%s\\n' "${{LINK_FLAGS[@]}}"
 def main():
     recipes = sorted(glob.glob(os.path.join(RECIPES_DIR, "*.ini")))
     assert len(recipes) > 0, "No recipes found"
-    print(f"[*] Verifying backward compatibility for {len(recipes)} recipes in {RECIPES_DIR}...")
+    print(f"[*] Verifying backward compatibility for {len(recipes)} recipes via patch_app.py...")
 
     failures = 0
     for r in recipes:
         expected = get_old_expected_modules(r)
-        actual_mods, _, _ = resolve_recipe_via_bash(r)
+        actual_mods, _, _ = resolve_recipe_via_python(r)
         missing = expected - actual_mods
         extra = actual_mods - expected
         name = os.path.basename(r)
 
         if missing:
-            print(f"[-] FAILED: {name} is missing expected modules: {missing}")
+            print(f"[-] FAILED (python): {name} is missing expected modules: {missing}")
             failures += 1
         else:
             extra_msg = f" (+ dynamic: {extra})" if extra else ""
-            print(f"[+] PASSED: {name} (expected {len(expected)}, resolved {len(actual_mods)}){extra_msg}")
+            print(f"[+] PASSED (python): {name} (expected {len(expected)}, resolved {len(actual_mods)}){extra_msg}")
 
-    print("\n[*] Testing custom flags...")
+    print("\n[*] Verifying recipes via legacy bash engine for parity...")
+    for r in recipes:
+        expected = get_old_expected_modules(r)
+        actual_mods, _, _ = resolve_recipe_via_bash(r)
+        missing = expected - actual_mods
+        if missing:
+            print(f"[-] FAILED (bash): {os.path.basename(r)} is missing expected modules: {missing}")
+            failures += 1
+
+    print("\n[*] Testing custom flags via patch_app.py...")
     with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False) as tf:
         tf.write("""[metadata]
 name = Test Flags
@@ -252,7 +275,7 @@ link_flags = -lsqlite3
         temp_ini = tf.name
 
     try:
-        mods, cflags, lflags = resolve_recipe_via_bash(temp_ini)
+        mods, cflags, lflags = resolve_recipe_via_python(temp_ini)
         assert "statfs_spoof.m" in mods, f"statfs_spoof.m missing: {mods}"
         assert "odr_bypass.m" in mods, f"odr_bypass.m missing: {mods}"
         assert "-DCUSTOM_OPT=1" in cflags, f"custom compile flags missing: {cflags}"
@@ -262,8 +285,7 @@ link_flags = -lsqlite3
     finally:
         os.unlink(temp_ini)
 
-    print("\n[*] Testing dynamic discovery for arbitrary matching file...")
-    # Test that setting a flag named e.g. assert_suppress = true auto-discovers assert_suppress.c
+    print("\n[*] Testing dynamic discovery for arbitrary matching file via patch_app.py...")
     with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False) as tf:
         tf.write("""[shims]
 assert_suppress = 1
@@ -271,7 +293,7 @@ assert_suppress = 1
         temp_ini2 = tf.name
 
     try:
-        mods, _, _ = resolve_recipe_via_bash(temp_ini2)
+        mods, _, _ = resolve_recipe_via_python(temp_ini2)
         assert "assert_suppress.c" in mods, f"assert_suppress.c not dynamically discovered: {mods}"
         print("[+] PASSED: Dynamic module discovery matching flag in [shims] works as expected!")
     finally:
