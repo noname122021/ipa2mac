@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 def setup_logging(log_path):
@@ -197,6 +198,7 @@ def codesign_bundle(app_bundle):
     subprocess.run(["codesign", "-f", "-s", "-", "--deep", app_bundle], check=True)
 
 def patch_app(target, output_dir=None):
+    start_time = time.time()
     temp_dir = tempfile.mkdtemp(prefix="ipa_patch_") if target.endswith(".ipa") else None
     try:
         app_bundle = extract_ipa(target, temp_dir) if temp_dir else target
@@ -255,8 +257,11 @@ def patch_app(target, output_dir=None):
             app_bundle = dest
 
         subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", app_bundle], capture_output=True)
-        logging.info("[+] Successfully patched %s", app_bundle)
+        logging.info("[+] Successfully patched %s in %.1fs", app_bundle, time.time() - start_time)
         return app_bundle
+    except Exception as e:
+        logging.error("[-] Conversion failed after %.1fs: %s", time.time() - start_time, e)
+        raise
     finally:
         if temp_dir and os.path.isdir(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -278,9 +283,9 @@ def run_repl():
         try:
             patch_app(target)
             print("\n[+] Done! Ready for next file.")
-        except Exception as e:
+        except Exception:
             logging.debug("REPL conversion error", exc_info=True)
-            print(f"[-] Conversion failed for {target}: {e}\n[-] Check ipa2mac.log for details.")
+            print("[-] Check ipa2mac.log for details.")
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -291,9 +296,9 @@ def main():
     try:
         patch_app(sys.argv[1].removeprefix("file://"), sys.argv[2] if len(sys.argv) > 2 else None)
         return 0
-    except Exception as e:
+    except Exception:
         logging.debug("Batch conversion error", exc_info=True)
-        print(f"[-] Conversion failed: {e}\n[-] Check ipa2mac.log for full details.", file=sys.stderr)
+        print("[-] Check ipa2mac.log for full details.", file=sys.stderr)
         return 1
 
 if __name__ == "__main__":
