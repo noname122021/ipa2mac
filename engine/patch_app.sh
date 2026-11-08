@@ -21,10 +21,15 @@ echo "[*] Target app bundle: $APP_BUNDLE"
 EXE_NAME=$(defaults read "$APP_BUNDLE/Info.plist" CFBundleExecutable 2>/dev/null || basename "$APP_BUNDLE" .app)
 MAIN_BIN="$APP_BUNDLE/$EXE_NAME"
 MAIN_ARCHS=$(lipo -archs "$MAIN_BIN" 2>/dev/null || true)
-[[ "$MAIN_ARCHS" != *"arm64"* ]] && { echo "[-] Error: ipa2mac requires 64-bit arm64 ($MAIN_ARCHS)"; rm -rf "$TEMP_DIR"; exit 1; }
+if [[ "$MAIN_ARCHS" != *"arm64"* ]]; then
+    echo "[-] Error: ipa2mac requires 64-bit arm64 ($MAIN_ARCHS)"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
 
 # Resolve recipe
-RECIPES_DIR="$DIR/../recipes"; [ ! -d "$RECIPES_DIR" ] && RECIPES_DIR="$DIR/recipes"
+RECIPES_DIR="$DIR/../recipes"
+[ ! -d "$RECIPES_DIR" ] && RECIPES_DIR="$DIR/recipes"
 BUNDLE_ID=$(defaults read "$APP_BUNDLE/Info.plist" CFBundleIdentifier 2>/dev/null || true)
 RECIPE_FILE="${RECIPE_OVERRIDE:-$RECIPES_DIR/$BUNDLE_ID.ini}"
 RESOLVED_RECIPE=""
@@ -38,11 +43,16 @@ recipe_get_val() { [ -f "$RESOLVED_RECIPE" ] && grep -E "^[[:space:]]*$1[[:space
 recipe_has_flag() { [[ "$(recipe_get_val "$1")" =~ ^(true|1|yes)$ ]]; }
 
 patch_binary() {
-    local bin="$1" archs=$(lipo -archs "$bin" 2>/dev/null || true)
-    [[ "$archs" == *"arm64"* ]] && [[ "$archs" == *" "* ]] && lipo -thin arm64 "$bin" -output "${bin}.thin" && mv "${bin}.thin" "$bin"
+    local bin="$1"
+    local archs
+    archs=$(lipo -archs "$bin" 2>/dev/null || true)
+    if [[ "$archs" == *"arm64"* ]] && [[ "$archs" == *" "* ]]; then
+        lipo -thin arm64 "$bin" -output "${bin}.thin" && mv "${bin}.thin" "$bin"
+    fi
     vtool -set-build-version maccatalyst 14.0 14.0 -replace -output "$bin" "$bin" 2>/dev/null || true
     if recipe_has_flag "background_tasks_redirect"; then
-        local bg=$(otool -L "$bin" 2>/dev/null | awk '/BackgroundTasks.framework/{print $1}')
+        local bg
+        bg=$(otool -L "$bin" 2>/dev/null | awk '/BackgroundTasks.framework/{print $1}')
         [ -n "$bg" ] && install_name_tool -change "$bg" "@executable_path/libshim.dylib" "$bin" 2>/dev/null || true
     fi
 }
@@ -57,11 +67,19 @@ if exp == '*' or f.read(len(bytes.fromhex(rep))) == bytes.fromhex(exp):
 f.close()
 "
 
-for p in "$APP_BUNDLE/Frameworks" "$APP_BUNDLE/PlugIns"; do
-    [ -d "$p" ] && find "$p" -type f | while read -r f; do
-        file "$f" | grep -q "Mach-O" && chmod +x "$f" 2>/dev/null && patch_binary "$f"
+if [ -d "$APP_BUNDLE/Frameworks" ]; then
+    for fw in "$APP_BUNDLE/Frameworks"/*.framework; do
+        [ -d "$fw" ] && { name=$(basename "$fw" .framework); [ -f "$fw/$name" ] && patch_binary "$fw/$name"; }
     done
-done
+    for dylib in "$APP_BUNDLE/Frameworks"/*.dylib; do
+        [ -f "$dylib" ] && patch_binary "$dylib"
+    done
+fi
+if [ -d "$APP_BUNDLE/PlugIns" ]; then
+    for appex in "$APP_BUNDLE/PlugIns"/*.appex; do
+        [ -d "$appex" ] && { name=$(basename "$appex" .appex); [ -f "$appex/$name" ] && patch_binary "$appex/$name"; }
+    done
+fi
 
 SELECTED_MODULES=("$MODULES_DIR/core_keychain.c" "$MODULES_DIR/mod_window.m" "$MODULES_DIR/mod_window_close.m" "$MODULES_DIR/mod_input_context.m")
 COMPILE_FLAGS=()
