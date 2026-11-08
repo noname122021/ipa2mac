@@ -163,7 +163,8 @@ add_module() {
 resolve_module_file() {
     local name="$1"
     [ -z "$name" ] && return 0
-    local cands=("$name" "$name.m" "$name.c" "mod_${name}.m" "mod_${name}.c" "${name#mod_}.m" "${name#mod_}.c")
+    local base="${name#mod_}"
+    local cands=("$name" "$name.m" "$name.c" "$base.m" "$base.c" "mod_${base}.m" "mod_${base}.c")
     for cand in "${cands[@]}"; do
         if [ -f "$MODULES_DIR/$cand" ]; then
             echo "$MODULES_DIR/$cand"
@@ -171,25 +172,6 @@ resolve_module_file() {
         fi
     done
     return 0
-}
-
-resolve_alias() {
-    case "$1" in
-        audio_session_fix) echo "mod_audio_legacy.m" ;;
-        statfs_spoof) echo "mod_statfs.c mod_nsurl_space.m" ;;
-        fake_mpmovieplayer) echo "mod_fake_mpmovieplayer.m mod_ascii_path_redirect.m mod_idle_timer.m mod_av_delegate.m" ;;
-        device_rotation_menu) echo "mod_d6_rotation.m" ;;
-        dyld_fishhook_suppress) echo "mod_dyld_fishhook.c" ;;
-        memory_fault_recovery|block_abort_raise|suppress_sigaction) echo "mod_fault_handler.c mod_vm_protect.c mod_signal_suppress.c" ;;
-        ubiquitous_store) echo "mod_ubiquitous.m" ;;
-        everyplay_stub|everyplay_mock) echo "mod_everyplay.m" ;;
-        game_center_auto_auth) echo "mod_gamecenter.m" ;;
-        touch_remapping) echo "mod_touch_remap.m" ;;
-        background_tasks_redirect) echo "mod_bg_classes.m mod_bg_scheduler.m mod_nsurl_upload_fix.m" ;;
-        device_spoof) echo "mod_device_spoof.c" ;;
-        window_close_exit|window_close_guard) echo "mod_window_close.m" ;;
-        *) return 1 ;;
-    esac
 }
 
 resolve_and_add() {
@@ -205,13 +187,6 @@ handle_shim_flag() {
     local key="$1"
     local val="$2"
     [[ "$val" == "true" || "$val" == "1" || "$val" == "yes" ]] || return 0
-    local alias_mods=$(resolve_alias "$key" 2>/dev/null || true)
-    if [ -n "$alias_mods" ]; then
-        for m in $alias_mods; do
-            resolve_and_add "$m"
-        done
-        return 0
-    fi
     resolve_and_add "$key"
     return 0
 }
@@ -285,7 +260,7 @@ fi
 # Device spoofing
 HW_MODEL=$(recipe_get_val "hardware_model")
 if [ -n "$HW_MODEL" ]; then
-    add_module "mod_device_spoof.c"
+    resolve_and_add "device_spoof"
     COMPILE_FLAGS+=("-DDEVICE_MODEL=\"$HW_MODEL\"")
 fi
 

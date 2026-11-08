@@ -46,33 +46,35 @@ def get_old_expected_modules(ini_path):
     mods = {"core_keychain.c", "mod_window.m", "mod_window_close.m", "mod_input_context.m"}
 
     if kv.get("hardware_model"):
-        mods.add("mod_device_spoof.c")
+        mods.add("device_spoof.c")
     if has_flag("statfs_spoof"):
-        mods.update(["mod_statfs.c", "mod_nsurl_space.m"])
+        mods.add("statfs_spoof.m")
     if has_flag("odr_bypass"):
-        mods.add("mod_odr_bypass.m")
+        mods.add("odr_bypass.m")
     eng = kv.get("engine", "")
     ascii_p = kv.get("ascii_path_redirect", "")
     if "unreal" in eng or has_flag("fake_mpmovieplayer") or ascii_p:
-        mods.update(["mod_fake_mpmovieplayer.m", "mod_ascii_path_redirect.m", "mod_idle_timer.m", "mod_av_delegate.m"])
+        mods.add("fake_mpmovieplayer.m")
     if has_flag("device_rotation_menu"):
-        mods.add("mod_d6_rotation.m")
+        mods.add("device_rotation_menu.m")
     if has_flag("audio_session_fix"):
-        mods.add("mod_audio_legacy.m")
+        mods.add("audio_session_fix.m")
     if has_flag("background_tasks_redirect"):
-        mods.update(["mod_bg_classes.m", "mod_bg_scheduler.m", "mod_nsurl_upload_fix.m"])
+        mods.add("background_tasks_redirect.m")
     if has_flag("dyld_fishhook_suppress"):
-        mods.add("mod_dyld_fishhook.c")
-    if has_flag("memory_fault_recovery") or has_flag("block_abort_raise") or has_flag("suppress_sigaction"):
-        mods.update(["mod_fault_handler.c", "mod_vm_protect.c", "mod_signal_suppress.c"])
+        mods.add("dyld_fishhook_suppress.c")
+    if has_flag("memory_fault_recovery"):
+        mods.add("memory_fault_recovery.c")
     if has_flag("assert_suppress"):
-        mods.add("mod_assert_suppress.c")
+        mods.add("assert_suppress.c")
     if has_flag("ubiquitous_store"):
-        mods.add("mod_ubiquitous.m")
+        mods.add("ubiquitous_store.m")
     if has_flag("everyplay_stub") or has_flag("everyplay_mock"):
-        mods.add("mod_everyplay.m")
+        mods.add("everyplay_stub.m")
     if has_flag("game_center_auto_auth"):
-        mods.add("mod_gamecenter.m")
+        mods.add("game_center_auto_auth.m")
+    if has_flag("touch_remapping"):
+        mods.add("touch_remapping.m")
 
     return mods
 
@@ -121,32 +123,14 @@ add_module() {{
 resolve_module_file() {{
     local name="$1"
     [ -z "$name" ] && return 0
-    local cands=("$name" "$name.m" "$name.c" "mod_${{name}}.m" "mod_${{name}}.c" "${{name#mod_}}.m" "${{name#mod_}}.c")
+    local base="${{name#mod_}}"
+    local cands=("$name" "$name.m" "$name.c" "$base.m" "$base.c" "mod_${{base}}.m" "mod_${{base}}.c")
     for cand in "${{cands[@]}}"; do
         if [ -f "$MODULES_DIR/$cand" ]; then
             echo "$MODULES_DIR/$cand"
             return 0
         fi
     done
-}}
-
-resolve_alias() {{
-    case "$1" in
-        audio_session_fix) echo "mod_audio_legacy.m" ;;
-        statfs_spoof) echo "mod_statfs.c mod_nsurl_space.m" ;;
-        fake_mpmovieplayer) echo "mod_fake_mpmovieplayer.m mod_ascii_path_redirect.m mod_idle_timer.m mod_av_delegate.m" ;;
-        device_rotation_menu) echo "mod_d6_rotation.m" ;;
-        dyld_fishhook_suppress) echo "mod_dyld_fishhook.c" ;;
-        memory_fault_recovery|block_abort_raise|suppress_sigaction) echo "mod_fault_handler.c mod_vm_protect.c mod_signal_suppress.c" ;;
-        ubiquitous_store) echo "mod_ubiquitous.m" ;;
-        everyplay_stub|everyplay_mock) echo "mod_everyplay.m" ;;
-        game_center_auto_auth) echo "mod_gamecenter.m" ;;
-        touch_remapping) echo "mod_touch_remap.m" ;;
-        background_tasks_redirect) echo "mod_bg_classes.m mod_bg_scheduler.m mod_nsurl_upload_fix.m" ;;
-        device_spoof) echo "mod_device_spoof.c" ;;
-        window_close_exit|window_close_guard) echo "mod_window_close.m" ;;
-        *) return 1 ;;
-    esac
 }}
 
 resolve_and_add() {{
@@ -159,13 +143,6 @@ handle_shim_flag() {{
     local key="$1"
     local val="$2"
     [[ "$val" == "true" || "$val" == "1" || "$val" == "yes" ]] || return 0
-    local alias_mods=$(resolve_alias "$key" 2>/dev/null || true)
-    if [ -n "$alias_mods" ]; then
-        for m in $alias_mods; do
-            resolve_and_add "$m"
-        done
-        return 0
-    fi
     resolve_and_add "$key"
 }}
 
@@ -205,7 +182,7 @@ RECIPE_LINK_FLAGS=$(recipe_get_val "link_flags")
 
 HW_MODEL=$(recipe_get_val "hardware_model")
 if [ -n "$HW_MODEL" ]; then
-    add_module "mod_device_spoof.c"
+    resolve_and_add "device_spoof"
     COMPILE_FLAGS+=("-DDEVICE_MODEL=\\"$HW_MODEL\\"")
 fi
 
@@ -267,8 +244,8 @@ name = Test Flags
 bundle_id = com.test.flags
 
 [shims]
-mod_statfs = true
-mod_odr_bypass = true
+statfs_spoof = true
+odr_bypass = true
 compile_flags = -DCUSTOM_OPT=1 -DTEST_FLAG
 link_flags = -lsqlite3
 """)
@@ -276,8 +253,8 @@ link_flags = -lsqlite3
 
     try:
         mods, cflags, lflags = resolve_recipe_via_bash(temp_ini)
-        assert "mod_statfs.c" in mods, f"mod_statfs.c missing: {mods}"
-        assert "mod_odr_bypass.m" in mods, f"mod_odr_bypass.m missing: {mods}"
+        assert "statfs_spoof.m" in mods, f"statfs_spoof.m missing: {mods}"
+        assert "odr_bypass.m" in mods, f"odr_bypass.m missing: {mods}"
         assert "-DCUSTOM_OPT=1" in cflags, f"custom compile flags missing: {cflags}"
         assert "-DTEST_FLAG" in cflags, f"custom compile flags missing: {cflags}"
         assert "-lsqlite3" in lflags, f"custom link flags missing: {lflags}"
@@ -286,7 +263,7 @@ link_flags = -lsqlite3
         os.unlink(temp_ini)
 
     print("\n[*] Testing dynamic discovery for arbitrary matching file...")
-    # Test that setting a flag named e.g. assert_suppress = true auto-discovers mod_assert_suppress.c
+    # Test that setting a flag named e.g. assert_suppress = true auto-discovers assert_suppress.c
     with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False) as tf:
         tf.write("""[shims]
 assert_suppress = 1
@@ -295,7 +272,7 @@ assert_suppress = 1
 
     try:
         mods, _, _ = resolve_recipe_via_bash(temp_ini2)
-        assert "mod_assert_suppress.c" in mods, f"mod_assert_suppress.c not dynamically discovered: {mods}"
+        assert "assert_suppress.c" in mods, f"assert_suppress.c not dynamically discovered: {mods}"
         print("[+] PASSED: Dynamic module discovery matching flag in [shims] works as expected!")
     finally:
         os.unlink(temp_ini2)

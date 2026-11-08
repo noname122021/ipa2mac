@@ -5,6 +5,7 @@
 
 static void handle_memory_fault(int sig, siginfo_t *info, void *ucontext) {
     uintptr_t addr = (uintptr_t)(info ? info->si_addr : NULL);
+    if (addr < 0x4000) return;
     uintptr_t page = addr & ~0x3fff;
     mprotect((void*)page, 0x10000, PROT_READ | PROT_WRITE);
     vm_protect(mach_task_self(), (vm_address_t)page, 0x10000, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
