@@ -13,6 +13,7 @@ static const void *get_key(CFDictionaryRef dict) {
     if (!dict) return CFSTR("default");
     const void *val = CFDictionaryGetValue(dict, kSecAttrAccount);
     if (!val) val = CFDictionaryGetValue(dict, kSecAttrService);
+    if (!val) val = CFDictionaryGetValue(dict, kSecAttrApplicationTag);
     return val ? val : CFSTR("default");
 }
 
@@ -25,13 +26,24 @@ static const void *get_val(CFDictionaryRef dict) {
 
 static CFTypeRef format_keychain_item(CFDictionaryRef query, const void *k, const void *v) {
     const void *retAttrs = query ? CFDictionaryGetValue(query, kSecReturnAttributes) : NULL;
-    Boolean isAttrs = (retAttrs && CFEqual(retAttrs, kCFBooleanTrue));
-    if (!isAttrs) return CFRetain(v);
+    if (retAttrs && CFEqual(retAttrs, kCFBooleanTrue)) {
+        CFMutableDictionaryRef dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFDictionarySetValue(dict, kSecAttrAccount, k);
+        CFDictionarySetValue(dict, kSecValueData, v);
+        return dict;
+    }
 
-    CFMutableDictionaryRef dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(dict, kSecAttrAccount, k);
-    CFDictionarySetValue(dict, kSecValueData, v);
-    return dict;
+    const void *retRef = query ? CFDictionaryGetValue(query, kSecReturnRef) : NULL;
+    if (retRef && CFEqual(retRef, kCFBooleanTrue) && v && CFGetTypeID(v) == CFDataGetTypeID()) {
+        CFMutableDictionaryRef keyAttrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFDictionarySetValue(keyAttrs, kSecAttrKeyType, kSecAttrKeyTypeRSA);
+        CFDictionarySetValue(keyAttrs, kSecAttrKeyClass, kSecAttrKeyClassPublic);
+        SecKeyRef keyRef = SecKeyCreateWithData((CFDataRef)v, keyAttrs, NULL);
+        CFRelease(keyAttrs);
+        if (keyRef) return keyRef;
+    }
+
+    return CFRetain(v);
 }
 
 static OSStatus shim_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {

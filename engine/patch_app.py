@@ -113,16 +113,11 @@ def find_module(name, modules_dir):
 
 def collect_modules(cfg, modules_dir):
     cfg = to_dict(cfg)
-    defaults = ["core_keychain.c", "mod_window.m", "mod_window_close.m", "mod_input_context.m"]
-    mods = [os.path.join(modules_dir, m) for m in defaults if os.path.isfile(os.path.join(modules_dir, m))]
     targets = [k for k, v in cfg.items() if v.lower() in ("true", "1", "yes")]
     targets += cfg.get("modules", "").replace(",", " ").split()
     if cfg.get("hardware_model"):
         targets.append("device_spoof")
-    if "unreal" in cfg.get("engine", "") or cfg.get("ascii_path_redirect"):
-        targets.append("fake_mpmovieplayer")
-    if cfg.get("background_tasks_redirect", "").lower() in ("true", "1", "yes"):
-        targets.append("background_tasks_redirect")
+    mods = []
     for t in targets:
         p = find_module(t, modules_dir)
         if p and p not in mods:
