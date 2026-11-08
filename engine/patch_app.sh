@@ -3,352 +3,138 @@ set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 MODULES_DIR="$DIR/modules"
-
 TARGET="$1"
-if [ -z "$TARGET" ]; then
-    echo "Usage: $0 </path/to/App.app | /path/to/App.ipa> [output_directory]"
-    exit 1
-fi
+[ -z "$TARGET" ] && { echo "Usage: $0 </path/to/App.app | /path/to/App.ipa> [output_directory]"; exit 1; }
 
 TEMP_DIR=""
 APP_BUNDLE=""
-
 if [ -f "$TARGET" ] && [[ "$TARGET" == *.ipa ]]; then
     TEMP_DIR=$(mktemp -d /tmp/ipa_patch.XXXXXX)
-    echo "[*] Extracting IPA to $TEMP_DIR..."
     unzip -q "$TARGET" -d "$TEMP_DIR"
     APP_BUNDLE=$(find "$TEMP_DIR/Payload" -maxdepth 1 -name "*.app" | head -n 1)
 elif [ -d "$TARGET" ] && [[ "$TARGET" == *.app ]]; then
     APP_BUNDLE="$TARGET"
-else
-    echo "[-] Error: Target must be a .app directory or .ipa file"
-    exit 1
 fi
-
-if [ -z "$APP_BUNDLE" ] || [ ! -d "$APP_BUNDLE" ]; then
-    echo "[-] Failed to find .app bundle"
-    exit 1
-fi
+[ -d "$APP_BUNDLE" ] || { echo "[-] Target must be a valid .app bundle or .ipa"; rm -rf "$TEMP_DIR"; exit 1; }
 
 echo "[*] Target app bundle: $APP_BUNDLE"
 EXE_NAME=$(defaults read "$APP_BUNDLE/Info.plist" CFBundleExecutable 2>/dev/null || basename "$APP_BUNDLE" .app)
 MAIN_BIN="$APP_BUNDLE/$EXE_NAME"
-
-# Architecture validation: must contain 64-bit arm64
 MAIN_ARCHS=$(lipo -archs "$MAIN_BIN" 2>/dev/null || true)
-if [[ "$MAIN_ARCHS" != *"arm64"* ]]; then
-    echo "[-] Error: Unsupported 32-bit architecture ($MAIN_ARCHS)."
-    echo "    ipa2mac requires 64-bit arm64 (iOS 7.0+)."
-    echo "    Legacy 32-bit applications (ARMv6/ARMv7, iOS 1-6) require a CPU instruction emulator like touchHLE or HULUS."
-    [ -n "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
-    exit 1
-fi
+[[ "$MAIN_ARCHS" != *"arm64"* ]] && { echo "[-] Error: ipa2mac requires 64-bit arm64 ($MAIN_ARCHS)"; rm -rf "$TEMP_DIR"; exit 1; }
 
-# Resolve and bundle recipe
-RECIPES_DIR="$DIR/../recipes"
-[ ! -d "$RECIPES_DIR" ] && [ -d "$DIR/recipes" ] && RECIPES_DIR="$DIR/recipes"
-
+# Resolve recipe
+RECIPES_DIR="$DIR/../recipes"; [ ! -d "$RECIPES_DIR" ] && RECIPES_DIR="$DIR/recipes"
 BUNDLE_ID=$(defaults read "$APP_BUNDLE/Info.plist" CFBundleIdentifier 2>/dev/null || true)
-RECIPE_FILE=""
-if [ -n "$RECIPE_OVERRIDE" ] && [ -f "$RECIPE_OVERRIDE" ]; then
-    RECIPE_FILE="$RECIPE_OVERRIDE"
-    echo "[*] Using recipe override: $RECIPE_FILE"
-elif [ -n "$BUNDLE_ID" ] && [ -f "$RECIPES_DIR/$BUNDLE_ID.ini" ]; then
-    RECIPE_FILE="$RECIPES_DIR/$BUNDLE_ID.ini"
-    echo "[*] Using recipe: $RECIPE_FILE"
-fi
-
+RECIPE_FILE="${RECIPE_OVERRIDE:-$RECIPES_DIR/$BUNDLE_ID.ini}"
 RESOLVED_RECIPE=""
-if [ -n "$RECIPE_FILE" ]; then
-    TARGET_INI=$(grep -E '^(target_ini|path)[[:space:]]*=' "$RECIPE_FILE" | head -n 1 | awk -F'=' '{print $2}' | tr -d ' \r\t')
-    if [ -n "$TARGET_INI" ] && [ -f "$RECIPES_DIR/$TARGET_INI" ]; then
-        RESOLVED_RECIPE="$RECIPES_DIR/$TARGET_INI"
-    else
-        RESOLVED_RECIPE="$RECIPE_FILE"
-    fi
+if [ -f "$RECIPE_FILE" ]; then
+    TARGET_INI=$(grep -E '^(target_ini|path)[[:space:]]*=' "$RECIPE_FILE" | head -n 1 | cut -d'=' -f2- | tr -d ' \r\t"')
+    [ -n "$TARGET_INI" ] && [ -f "$RECIPES_DIR/$TARGET_INI" ] && RESOLVED_RECIPE="$RECIPES_DIR/$TARGET_INI" || RESOLVED_RECIPE="$RECIPE_FILE"
     cp "$RESOLVED_RECIPE" "$APP_BUNDLE/recipe.ini"
-    echo "[+] Bundled recipe for $BUNDLE_ID into application"
 fi
 
-recipe_get_val() {
-    local key="$1"
-    [ -n "$RESOLVED_RECIPE" ] && [ -f "$RESOLVED_RECIPE" ] || return 0
-    grep -E "^[[:space:]]*$key[[:space:]]*=" "$RESOLVED_RECIPE" 2>/dev/null | head -n 1 | cut -d'=' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'
-}
-
-recipe_has_flag() {
-    local val=$(recipe_get_val "$1")
-    [[ "$val" == "true" || "$val" == "1" || "$val" == "yes" ]]
-}
-
-BG_REDIRECT="false"
-if recipe_has_flag "background_tasks_redirect"; then
-    BG_REDIRECT="true"
-fi
+recipe_get_val() { [ -f "$RESOLVED_RECIPE" ] && grep -E "^[[:space:]]*$1[[:space:]]*=" "$RESOLVED_RECIPE" 2>/dev/null | head -n 1 | cut -d'=' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }
+recipe_has_flag() { [[ "$(recipe_get_val "$1")" =~ ^(true|1|yes)$ ]]; }
 
 patch_binary() {
-    local bin="$1"
-    echo "[*] Processing binary: $bin"
-
-    # Thin to arm64 if fat
-    local archs=$(lipo -archs "$bin" 2>/dev/null || true)
-    if [[ "$archs" == *"arm64"* ]] && [[ "$archs" == *" "* ]]; then
-        echo "    [-] Thinning $bin to arm64..."
-        lipo -thin arm64 "$bin" -output "${bin}.thin" && mv "${bin}.thin" "$bin"
-    fi
-
-    # vtool to Mac Catalyst 14.0
-    echo "    [-] Setting build version maccatalyst 14.0..."
+    local bin="$1" archs=$(lipo -archs "$bin" 2>/dev/null || true)
+    [[ "$archs" == *"arm64"* ]] && [[ "$archs" == *" "* ]] && lipo -thin arm64 "$bin" -output "${bin}.thin" && mv "${bin}.thin" "$bin"
     vtool -set-build-version maccatalyst 14.0 14.0 -replace -output "$bin" "$bin" 2>/dev/null || true
-
-    # Redirect BackgroundTasks.framework if enabled or if missing symbols detected
-    if [ "$BG_REDIRECT" = "true" ] || strings "$bin" 2>/dev/null | grep -q "BGContinuedProcessingTask"; then
-        if otool -L "$bin" 2>/dev/null | grep -q "BackgroundTasks.framework"; then
-            echo "    [-] Redirecting BackgroundTasks.framework to libshim.dylib..."
-            local bg_path=$(otool -L "$bin" | grep "BackgroundTasks.framework" | awk '{print $1}')
-            if [ -n "$bg_path" ]; then
-                install_name_tool -change "$bg_path" "@executable_path/libshim.dylib" "$bin" 2>/dev/null || true
-            fi
-        fi
+    if recipe_has_flag "background_tasks_redirect"; then
+        local bg=$(otool -L "$bin" 2>/dev/null | awk '/BackgroundTasks.framework/{print $1}')
+        [ -n "$bg" ] && install_name_tool -change "$bg" "@executable_path/libshim.dylib" "$bin" 2>/dev/null || true
     fi
 }
-
 patch_binary "$MAIN_BIN"
 
-# UE3 FConfigCacheIni::LoadCoalescedFile patch at 0x8c33c (12 bytes: null check, direct size load, nop blr)
-if [[ "$BUNDLE_ID" == "com.chairentertainment.IB2"* ]]; then
-    python3 -c "
-with open('$MAIN_BIN', 'r+b') as f:
-    f.seek(0x8c33c)
-    curr = f.read(12)
-    # Check for original unpatched (a80240f9 083140f9 00013fd6) or half-patched (a80240f9 a0aa40b9 00013fd6)
-    if curr == bytes.fromhex('a80240f9083140f900013fd6') or curr == bytes.fromhex('a80240f9a0aa40b900013fd6'):
-        f.seek(0x8c33c)
-        f.write(bytes.fromhex('550200b4a0aa40b91f2003d5'))
-        print('    [+] Applied UE3 LoadCoalescedFile 12-byte patch (cbz + ldr + nop) at 0x8c33c')
+# Generic binary patch applier: offset:expected_hex:replacement_hex
+BP=$(recipe_get_val "binary_patch")
+[ -n "$BP" ] && python3 -c "
+off, exp, rep = '$BP'.split(':'); f = open('$MAIN_BIN', 'r+b'); f.seek(int(off, 0))
+if exp == '*' or f.read(len(bytes.fromhex(rep))) == bytes.fromhex(exp):
+    f.seek(int(off, 0)); f.write(bytes.fromhex(rep)); print('    [+] Applied binary patch at ' + off)
+f.close()
 "
-fi
 
-# Recursively patch frameworks and dylibs
-find "$APP_BUNDLE" -type f ! -name "libshim.dylib" | while read -r file; do
-    if file "$file" | grep -q "Mach-O"; then
-        chmod +x "$file" 2>/dev/null || true
-        if [ "$file" != "$MAIN_BIN" ]; then
-            patch_binary "$file"
-        fi
-    fi
+for p in "$APP_BUNDLE/Frameworks" "$APP_BUNDLE/PlugIns"; do
+    [ -d "$p" ] && find "$p" -type f | while read -r f; do
+        file "$f" | grep -q "Mach-O" && chmod +x "$f" 2>/dev/null && patch_binary "$f"
+    done
 done
-
-# =============================================================================
-# JIT Micro-Shim Compilation: select isolated, atomic micro-modules
-# =============================================================================
-# Module resolution and dynamic discovery helpers
-add_module() {
-    local target="$1"
-    local file=""
-    if [ -f "$target" ]; then
-        file="$target"
-    elif [ -f "$MODULES_DIR/$target" ]; then
-        file="$MODULES_DIR/$target"
-    else
-        return 0
-    fi
-    for m in "${SELECTED_MODULES[@]}"; do
-        [ "$m" = "$file" ] && return 0
-    done
-    SELECTED_MODULES+=("$file")
-    return 0
-}
-
-resolve_module_file() {
-    local name="$1"
-    [ -z "$name" ] && return 0
-    local base="${name#mod_}"
-    local cands=("$name" "$name.m" "$name.c" "$base.m" "$base.c" "mod_${base}.m" "mod_${base}.c")
-    for cand in "${cands[@]}"; do
-        if [ -f "$MODULES_DIR/$cand" ]; then
-            echo "$MODULES_DIR/$cand"
-            return 0
-        fi
-    done
-    return 0
-}
-
-resolve_and_add() {
-    local item="$1"
-    local resolved=$(resolve_module_file "$item")
-    if [ -n "$resolved" ]; then
-        add_module "$resolved"
-    fi
-    return 0
-}
-
-handle_shim_flag() {
-    local key="$1"
-    local val="$2"
-    [[ "$val" == "true" || "$val" == "1" || "$val" == "yes" ]] || return 0
-    resolve_and_add "$key"
-    return 0
-}
-
-process_shims_section() {
-    [ -n "$RESOLVED_RECIPE" ] && [ -f "$RESOLVED_RECIPE" ] || return 0
-    local in_shims=0
-    while IFS="=" read -r raw_key raw_val || [ -n "$raw_key" ]; do
-        local key=$(echo "$raw_key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-        local val=$(echo "$raw_val" | cut -d';' -f1 | cut -d'#' -f1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')
-        if [[ "$key" =~ ^\[(.*)\]$ ]]; then
-            local sec="${BASH_REMATCH[1]}"
-            [ "$sec" = "shims" ] && in_shims=1 || in_shims=0
-            continue
-        fi
-        if [ $in_shims -eq 1 ] && [ -n "$key" ]; then
-            handle_shim_flag "$key" "$val"
-        fi
-    done < "$RESOLVED_RECIPE"
-    return 0
-}
 
 SELECTED_MODULES=("$MODULES_DIR/core_keychain.c" "$MODULES_DIR/mod_window.m" "$MODULES_DIR/mod_window_close.m" "$MODULES_DIR/mod_input_context.m")
 COMPILE_FLAGS=()
 LINK_FLAGS=("-framework" "Foundation" "-framework" "Security" "-framework" "AppKit" "-framework" "CoreGraphics" "-framework" "AudioToolbox" "-framework" "AVFoundation")
 
-# Process dynamic shims from recipe [shims] section
+add_module() {
+    local name="$1" base="${1#mod_}" file=""
+    for cand in "$name" "$name.m" "$name.c" "$base.m" "$base.c" "mod_${base}.m" "mod_${base}.c"; do
+        [ -f "$cand" ] && { file="$cand"; break; }
+        [ -f "$MODULES_DIR/$cand" ] && { file="$MODULES_DIR/$cand"; break; }
+    done
+    [ -z "$file" ] && return 0
+    for m in "${SELECTED_MODULES[@]}"; do [ "$m" = "$file" ] && return 0; done
+    SELECTED_MODULES+=("$file")
+}
+
+process_shims_section() {
+    [ -f "$RESOLVED_RECIPE" ] || return 0
+    local in_shims=0
+    while IFS="=" read -r k v || [ -n "$k" ]; do
+        k=$(echo "$k" | tr -d ' \r\t')
+        v=$(echo "$v" | cut -d';' -f1 | cut -d'#' -f1 | tr -d ' \r\t"')
+        [[ "$k" =~ ^\[(.*)\]$ ]] && { [ "${BASH_REMATCH[1]}" = "shims" ] && in_shims=1 || in_shims=0; continue; }
+        [ $in_shims -eq 1 ] && [[ "$v" =~ ^(true|1|yes)$ ]] && add_module "$k"
+    done < "$RESOLVED_RECIPE"
+    return 0
+}
 process_shims_section
 
-RECIPE_COMPILE_FLAGS=$(recipe_get_val "compile_flags")
-[ -n "$RECIPE_COMPILE_FLAGS" ] && COMPILE_FLAGS+=($RECIPE_COMPILE_FLAGS)
+[ -n "$(recipe_get_val "compile_flags")" ] && COMPILE_FLAGS+=($(recipe_get_val "compile_flags"))
+[ -n "$(recipe_get_val "link_flags")" ] && LINK_FLAGS+=($(recipe_get_val "link_flags"))
 
-RECIPE_LINK_FLAGS=$(recipe_get_val "link_flags")
-[ -n "$RECIPE_LINK_FLAGS" ] && LINK_FLAGS+=($RECIPE_LINK_FLAGS)
-
-# Window configuration
-WIDTH=$(recipe_get_val "width")
-[ -n "$WIDTH" ] && COMPILE_FLAGS+=("-DTARGET_WIDTH=$WIDTH")
-
-HEIGHT=$(recipe_get_val "height")
-[ -n "$HEIGHT" ] && COMPILE_FLAGS+=("-DTARGET_HEIGHT=$HEIGHT")
-
+# Window & screen configuration
+[ -n "$(recipe_get_val "width")" ] && COMPILE_FLAGS+=("-DTARGET_WIDTH=$(recipe_get_val "width")")
+[ -n "$(recipe_get_val "height")" ] && COMPILE_FLAGS+=("-DTARGET_HEIGHT=$(recipe_get_val "height")")
 ASPECT=$(recipe_get_val "aspect_ratio")
-if [ -n "$ASPECT" ] && [ "$ASPECT" != "free" ]; then
-    AW=$(echo "$ASPECT" | awk -F'[:]' '{print $1}')
-    AH=$(echo "$ASPECT" | awk -F'[:]' '{print $2}')
-    if [ -n "$AW" ] && [ -n "$AH" ]; then
-        COMPILE_FLAGS+=("-DASPECT_W=$AW" "-DASPECT_H=$AH")
-    fi
-fi
-
-RESIZABLE=$(recipe_get_val "resizable")
-if [ "$RESIZABLE" = "false" ] || [ "$RESIZABLE" = "0" ]; then
-    COMPILE_FLAGS+=("-DRESIZABLE=0")
-fi
-
-SCALE_MODE=$(recipe_get_val "scale_mode")
-if [ "$SCALE_MODE" = "aspect_fit" ] || recipe_has_flag "uiscreen_bounds_fixed"; then
-    COMPILE_FLAGS+=("-DHOOK_UISCREEN=1")
-fi
-
+[ -n "$ASPECT" ] && [ "$ASPECT" != "free" ] && COMPILE_FLAGS+=("-DASPECT_W=${ASPECT%:*}" "-DASPECT_H=${ASPECT#*:}")
+[ "$(recipe_get_val "resizable")" = "false" ] && COMPILE_FLAGS+=("-DRESIZABLE=0")
+{ [ "$(recipe_get_val "scale_mode")" = "aspect_fit" ] || recipe_has_flag "uiscreen_bounds_fixed"; } && COMPILE_FLAGS+=("-DHOOK_UISCREEN=1")
 IDIOM=$(recipe_get_val "user_interface_idiom")
-if [ "$IDIOM" = "pad" ] || [ "$IDIOM" = "1" ]; then
-    COMPILE_FLAGS+=("-DIDIOM_PAD=1")
-fi
-
-if [[ "$BUNDLE_ID" == *"cuttherope"* ]] || [[ "$BUNDLE_ID" == *"zeptolab"* ]]; then
-    COMPILE_FLAGS+=("-DIS_CTR=1" "-DHOOK_UISCREEN=1")
-fi
-
-# Device spoofing
+{ [ "$IDIOM" = "pad" ] || [ "$IDIOM" = "1" ]; } && COMPILE_FLAGS+=("-DIDIOM_PAD=1")
 HW_MODEL=$(recipe_get_val "hardware_model")
-if [ -n "$HW_MODEL" ]; then
-    resolve_and_add "device_spoof"
-    COMPILE_FLAGS+=("-DDEVICE_MODEL=\"$HW_MODEL\"")
-fi
-
-# Unreal Engine 3 / ASCII path target
-ENGINE=$(recipe_get_val "engine")
-ASCII_PATH=$(recipe_get_val "ascii_path_redirect")
-if [[ "$ENGINE" == *"unreal"* ]] || [ -n "$ASCII_PATH" ]; then
-    handle_shim_flag "fake_mpmovieplayer" "true"
-    [ -n "$ASCII_PATH" ] && COMPILE_FLAGS+=("-DASCII_PATH_TARGET=\"$ASCII_PATH\"")
-fi
-
-# Background tasks reexport (JAVser, etc.)
-if [ "$BG_REDIRECT" = "true" ] || strings "$MAIN_BIN" 2>/dev/null | grep -q "BGContinuedProcessingTask"; then
-    handle_shim_flag "background_tasks_redirect" "true"
-    LINK_FLAGS+=("-Wl,-reexport_framework,BackgroundTasks")
-fi
-
-if [ "$DUMP_MODULES" = "1" ]; then
-    for m in "${SELECTED_MODULES[@]}"; do
-        basename "$m"
-    done
-    exit 0
-fi
+[ -n "$HW_MODEL" ] && add_module "device_spoof" && COMPILE_FLAGS+=("-DDEVICE_MODEL=\"$HW_MODEL\"")
+[ -n "$(recipe_get_val "ascii_path_redirect")" ] && COMPILE_FLAGS+=("-DASCII_PATH_TARGET=\"$(recipe_get_val "ascii_path_redirect")\"")
+[ "$DUMP_MODULES" = "1" ] && { basename -a "${SELECTED_MODULES[@]}"; exit 0; }
 
 # Compile JIT libshim.dylib
 TARGET_SHIM="$APP_BUNDLE/libshim.dylib"
 echo "[*] JIT Compiling libshim.dylib for $(basename "$APP_BUNDLE")..."
-echo "    Selected modules: $(basename -a "${SELECTED_MODULES[@]}" | tr '\n' ' ')"
 clang -dynamiclib -arch arm64 -install_name @executable_path/libshim.dylib \
-    "${LINK_FLAGS[@]}" \
-    "${COMPILE_FLAGS[@]}" \
-    "${SELECTED_MODULES[@]}" \
-    -o "$TARGET_SHIM"
-
+    "${LINK_FLAGS[@]}" "${COMPILE_FLAGS[@]}" "${SELECTED_MODULES[@]}" -o "$TARGET_SHIM"
 vtool -set-build-version maccatalyst 14.0 14.0 -replace -output "$TARGET_SHIM" "$TARGET_SHIM"
-codesign -f -s - "$TARGET_SHIM"
-
-# Inject libshim.dylib into main executable
-echo "[*] Injecting libshim.dylib into $MAIN_BIN..."
 python3 "$DIR/insert_dylib.py" "$MAIN_BIN" "@executable_path/libshim.dylib"
-
-# Strip quarantine
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 
-# Unity Addressables dependency fix (e.g. CarX Street)
-AA_DIR="$APP_BUNDLE/Data/Raw/aa/BuildTarget"
-if [ -d "$AA_DIR" ] && [ -f "$AA_DIR/shared_prefabs_assets_all.bundle" ] && [ ! -f "$AA_DIR/shared_assets_all.bundle" ]; then
-    echo "    [-] Bundling shared_assets_all.bundle for Addressables..."
-    cp "$AA_DIR/shared_prefabs_assets_all.bundle" "$AA_DIR/shared_assets_all.bundle"
-fi
+# Generic bundle copy
+BC=$(recipe_get_val "bundle_copy")
+[ -n "$BC" ] && { SRC="${BC%%:*}"; DST="${BC##*:}"; [ -f "$APP_BUNDLE/$SRC" ] && [ ! -f "$APP_BUNDLE/$DST" ] && cp "$APP_BUNDLE/$SRC" "$APP_BUNDLE/$DST"; }
 
-# Patch Info.plist for Mac Catalyst & LaunchServices compatibility
+# Patch Info.plist
 PLIST="$APP_BUNDLE/Info.plist"
-if [ -f "$PLIST" ]; then
-    echo "[*] Patching Info.plist for Mac Catalyst & LaunchServices..."
+[ -f "$PLIST" ] && {
     plutil -replace CFBundleSupportedPlatforms -json '["iPhoneOS", "MacOSX"]' "$PLIST"
     plutil -replace LSMinimumSystemVersion -string "14.0" "$PLIST"
     plutil -replace UIDeviceFamily -json '[1, 2, 6]' "$PLIST" 2>/dev/null || true
     plutil -remove UIRequiredDeviceCapabilities "$PLIST" 2>/dev/null || true
-fi
+}
 
-# Codesign binaries and libraries recursively, then main bundle
-find "$APP_BUNDLE" -type f ! -name "libshim.dylib" | while read -r f; do
-    if file "$f" | grep -q "Mach-O"; then
-        codesign -f -s - "$f" 2>/dev/null || true
-    fi
-done
-find "$APP_BUNDLE/Frameworks" -type d -name "*.framework" 2>/dev/null | while read -r fw; do
-    codesign -f -s - "$fw" 2>/dev/null || true
-done
-find "$APP_BUNDLE/PlugIns" -type d -name "*.appex" 2>/dev/null | while read -r appex; do
-    codesign -f -s - "$appex" 2>/dev/null || true
-done
-
-echo "[*] Codesigning app bundle ad-hoc..."
+# Codesign binaries and bundle
+echo "[*] Codesigning binaries and bundle..."
+find "$APP_BUNDLE" -depth \( -name "*.framework" -o -name "*.appex" -o -name "*.dylib" \) -exec codesign -f -s - {} + 2>/dev/null || true
 codesign -f -s - --deep "$APP_BUNDLE"
 
-if [ -n "$TEMP_DIR" ]; then
-    OUT_DIR="${2:-$(dirname "$TARGET")}"
-    DEST="$OUT_DIR/$(basename "$APP_BUNDLE")"
-    rm -rf "$DEST"
-    mv "$APP_BUNDLE" "$DEST"
-    rm -rf "$TEMP_DIR"
-    APP_BUNDLE="$DEST"
-fi
-
-# Register with LaunchServices
-echo "[*] Registering with LaunchServices..."
+[ -n "$TEMP_DIR" ] && { OUT_DIR="${2:-$(dirname "$TARGET")}"; DEST="$OUT_DIR/$(basename "$APP_BUNDLE")"; rm -rf "$DEST" && mv "$APP_BUNDLE" "$DEST" && rm -rf "$TEMP_DIR" && APP_BUNDLE="$DEST"; }
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" 2>/dev/null || true
-
 echo "[+] Successfully patched $APP_BUNDLE"
