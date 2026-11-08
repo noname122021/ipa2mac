@@ -36,9 +36,9 @@ Initial execution succeeded through the launch screen and the birth-year verific
 - **Root Cause**: Real Racing 3 queries `sysctlbyname("hw.machine")` to look up hardware-specific engine profiles in `res/eds/*.plist`. On macOS host hardware without spoofing, the call returns `MacBookAir10,1`. The engine searched `res/eds/` for `MacBookAir10,1.plist`, found no match, logged `Error! Settings file loaded, but couldn't match a device!`, and defaulted internal LOD state pointers (`CAR_LOD_MAPPING_MIPMAP_OPPONENTS`) to `NULL`. At race startup, dereferencing this pointer caused an unrecoverable segmentation fault.
 - **Mitigation**: Added `hardware_model = iPad6,7` and `user_interface_idiom = pad` to `recipes/com.ea.realracing3.inc.ini`. The app matched `res/eds/iPad6,7.plist` (`iPad Pro 12.9" wifi`), initialized all LOD tables correctly, and launched smoothly into 3D rendering.
 
-### 3.2. Tutorial Tilt Steering Stall ("Чтобы повернуть наклоните устройство")
+### 3.2. Tutorial Tilt Steering Stall ("Tilt Device to Steer")
 
-- **Symptom**: The introductory race launches into live 3D gameplay with audio, but halts progress on the tutorial modal: *"Чтобы повернуть, наклоните устройство"* ("Tilt device to steer").
+- **Symptom**: The introductory race launches into live 3D gameplay with audio, but halts progression on the mandatory tutorial modal *"Tilt device to steer"* (localized in RU as *"Чтобы повернуть наклоните устройство"*).
 - **Root Cause**: The default control scheme relies on CoreMotion accelerometer sensors. Under macOS Catalyst / native execution, Apple Silicon desktop environments report `[CMMotionManager isAccelerometerAvailable] == NO`. Consequently, `-[CMMotionManager accelerometerData]` is skipped, returning zeroed acceleration data. The tutorial loop waits indefinitely for a non-zero lateral tilt threshold before granting control.
 
 ---
