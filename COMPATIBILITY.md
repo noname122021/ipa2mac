@@ -8,16 +8,20 @@ Authoritative compatibility register for non-encrypted arm64 iOS applications ex
 
 | Application | Bundle ID | Version | Engine / Tech Stack | Graphics | Audio Stack | Key Shims & Quirks | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Zenless Zone Zero** | `com.HoYoverse.Nap` | 3.3.1 | Unity / Metal / Wwise | Metal | Wwise / CriWare | `audio_session_fix` prevents synchronous XPC deadlock, `iPad14,3` hardware spoof, `memory_fault_recovery` | **Verified / In-Game** |
+| **CarX Street** | `com.carxtech.sr` | 1.24.0 | Unity 6000 (IL2CPP) | Metal | FMOD / CoreAudio | 64GB `statfs_spoof`, `odr_bypass`, `iPad13,8` spoof, Addressables bundle copy | **Verified / 60 FPS** |
 | **BADLAND** | `com.frogmindgames.dodge` | 3.4.3 | Frogmind C++ / Cocos2d-x | GLES / Metal | FMOD / CoreAudio | Fishhook deadlock suppression, unthrottled CoreAudio IOThread, in-memory Keychain | **Verified / 60 FPS** |
 | **LIMBO** | `com.playdeadgames.limbo.ios` | 1.1.28 | Playdead C++ Engine | Custom Metal | FMOD / CoreAudio | `sysctlbyname("hw.machine")` spoofed to `iPad8,1`, `GKLocalPlayer` async auto-auth | **Verified / 60 FPS** |
 | **Monument Valley** | `com.ustwo.monumentvalley` | 2.10.2 | Unity 2020.3.21f1 (IL2CPP) | Metal | Unity CoreAudio | Multi-binary retagging (`UnityFramework.framework`), `MockUbiquitousStore` dictionary stub | **Verified / 60 FPS** |
 | **Alto's Adventure** | `com.snowman.alto` | 1.6.2 | Unity 5.1.4f1 | Metal | Unity CoreAudio | `NSUbiquitousKeyValueStore` stub, AppKit mouse-up close guard | **Verified / 60 FPS** |
 | **Cut the Rope** | `com.zeptolab.cuttherope` | 2.7.1 | ZeptoLab Native C++ | Legacy OpenGL ES 2.0 | OpenAL / AudioToolbox | 2-level `CALayerHost`/`CAEAGLLayer` aspect-fit matrix, `UITouch` coordinate remapping | **Verified / 60 FPS** |
 | **Infinity Blade II** | `com.chairentertainment.IB2` | 1.3.5 | Unreal Engine 3 (Mobile) | OpenGL ES 2.0 | OpenAL / AudioQueue | ASCII `/tmp/SwordGame.app` path redirection, `[AVAudioSession setDelegate:]` neutralize, fake `MPMoviePlayerController` | **Verified / In-Game** |
+| **DEVICE 6** | `com.simogo.devicesix` | 1.4 | Simogo Native ObjC | UIKit / GLES | System Audio | AppKit MenuBar device orientation rotation switch, 3:4 aspect clamp | **Verified / Working** |
 | **EcoFlow** | `com.ef.EcoFlow` | 6.11.0 | Native Swift / ObjC | UIKit / Metal | System Audio | `UIUserInterfaceIdiomPad` (1) forced tablet layout, 3:4 window aspect clamp, Keychain stub | **Verified / Working** |
 | **VLC for Mobile** | `org.videolan.vlc-ios` | 3.0.2 | Native Swift / libvlc C | UIKit / Metal / GLES | CoreAudio / AudioUnit | Multi-framework retagging (`MobileVLCKit`, `MediaLibraryKit`), network socket entitlements | **Verified / Working** |
 | **GoodReader Pro** | `com.goodiware.grpro` | 5.6.1119 | Native ObjC / C++ | UIKit / PDFKit | CoreAudio | `CFFIXED_USER_HOME` redirection to `~/Documents`, `UIUserInterfaceIdiomPad` | **Verified / Working** |
 | **PCalc** | `com.pcalc.mobile` | 3.7.5 | Native CocoaTouch / C | UIKit / CoreGraphics | System Audio | In-memory Keychain, tablet calculation tape view, window close exit handler | **Verified / Working** |
+| **JAVser** | `com.guro.javser` | 1.0.0 | Compose Multiplatform (Kotlin) | Skiko Metal | AVFoundation | `mod_bg_classes` stubs, selective BackgroundTasks framework redirect | **Verified / Working** |
 
 ---
 
@@ -25,16 +29,20 @@ Authoritative compatibility register for non-encrypted arm64 iOS applications ex
 
 | Bundle ID | Recipe File | Window (WxH) | Aspect Ratio | Resizable | Orientation | Device Model | Key Feature Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `com.frogmindgames.dodge` | [recipes/com.frogmindgames.dodge.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.frogmindgames.dodge.ini) | 960x540 | 16:9 | Yes | Landscape | `iPad8,1` | `dyld_fishhook_suppress`, `audio_unthrottle` |
-| `com.playdeadgames.limbo.ios` | [recipes/com.playdeadgames.limbo.ios.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.playdeadgames.limbo.ios.ini) | 1152x648 | 16:9 | Yes | Landscape | `iPad8,1` | `game_center_auto_auth`, `sysctl_spoof` |
-| `com.ustwo.monumentvalley` | [recipes/com.ustwo.monumentvalley.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.ustwo.monumentvalley.ini) | 540x960 | 9:16 | Yes | Portrait | Default | `ubiquitous_store`, `frameworks_retag` |
-| `com.snowman.alto` | [recipes/com.snowman.alto.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.snowman.alto.ini) | 960x540 | 16:9 | Yes | Landscape | Default | `ubiquitous_store`, `window_close_guard` |
-| `com.zeptolab.cuttherope` | [recipes/com.zeptolab.cuttherope.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.zeptolab.cuttherope.ini) | 360x540 | 2:3 | Yes | Portrait | Default | `touch_remapping`, `calayer_aspect_fit` |
-| `com.chairentertainment.IB2` | [recipes/com.chairentertainment.IB2.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.chairentertainment.IB2.ini) | 1024x768 | 4:3 | No | Landscape | `iPad8,1` | `ascii_path_redirect`, `fake_mpmovieplayer` |
-| `com.ef.EcoFlow` | [recipes/com.ef.EcoFlow.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.ef.EcoFlow.ini) | 768x1024 | 3:4 | Yes | Portrait | `iPad8,1` | `user_interface_idiom = pad`, `aspect_clamp` |
-| `org.videolan.vlc-ios` | [recipes/org.videolan.vlc-ios.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/org.videolan.vlc-ios.ini) | 960x600 | Free | Yes | Free | Default | `multi_framework_retag`, `network_entitlements` |
-| `com.goodiware.grpro` | [recipes/com.goodiware.grpro.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.goodiware.grpro.ini) | 800x1000 | Free | Yes | Free | Default | `user_interface_idiom = pad`, `cffixed_user_home` |
-| `com.pcalc.mobile` | [recipes/com.pcalc.mobile.ini](file:///Users/superuser/Downloads/Новая%20папка%2010/recipes/com.pcalc.mobile.ini) | 420x680 | Free | Yes | Portrait | Default | `user_interface_idiom = pad`, `window_close_exit` |
+| `com.HoYoverse.Nap` | [recipes/com.HoYoverse.Nap.ini](recipes/com.HoYoverse.Nap.ini) | 1280x720 | 16:9 | Yes | Landscape | `iPad14,3` | `audio_session_fix`, `memory_fault_recovery` |
+| `com.carxtech.sr` | [recipes/com.carxtech.sr.ini](recipes/com.carxtech.sr.ini) | 1280x720 | 16:9 | Yes | Landscape | `iPad13,8` | `statfs_spoof`, `odr_bypass`, `bundle_copy` |
+| `com.frogmindgames.dodge` | [recipes/com.frogmindgames.dodge.ini](recipes/com.frogmindgames.dodge.ini) | 960x540 | 16:9 | Yes | Landscape | `iPad8,1` | `dyld_fishhook_suppress`, `audio_unthrottle` |
+| `com.playdeadgames.limbo.ios` | [recipes/com.playdeadgames.limbo.ios.ini](recipes/com.playdeadgames.limbo.ios.ini) | 1152x648 | 16:9 | Yes | Landscape | `iPad8,1` | `game_center_auto_auth`, `sysctl_spoof` |
+| `com.ustwo.monumentvalley` | [recipes/com.ustwo.monumentvalley.ini](recipes/com.ustwo.monumentvalley.ini) | 540x960 | 9:16 | Yes | Portrait | Default | `ubiquitous_store`, `frameworks_retag` |
+| `com.snowman.alto` | [recipes/com.snowman.alto.ini](recipes/com.snowman.alto.ini) | 960x540 | 16:9 | Yes | Landscape | Default | `ubiquitous_store`, `window_close_guard` |
+| `com.zeptolab.cuttherope` | [recipes/com.zeptolab.cuttherope.ini](recipes/com.zeptolab.cuttherope.ini) | 360x540 | 2:3 | Yes | Portrait | Default | `touch_remapping`, `calayer_aspect_fit` |
+| `com.chairentertainment.IB2` | [recipes/com.chairentertainment.IB2.ini](recipes/com.chairentertainment.IB2.ini) | 1024x768 | 4:3 | No | Landscape | `iPad8,1` | `ascii_path_redirect`, `fake_mpmovieplayer` |
+| `com.simogo.devicesix` | [recipes/com.simogo.devicesix.ini](recipes/com.simogo.devicesix.ini) | 768x1024 | 3:4 | Yes | Portrait | Default | `device_rotation_menu`, `aspect_clamp` |
+| `com.ef.EcoFlow` | [recipes/com.ef.EcoFlow.ini](recipes/com.ef.EcoFlow.ini) | 768x1024 | 3:4 | Yes | Portrait | `iPad8,1` | `user_interface_idiom = pad`, `aspect_clamp` |
+| `org.videolan.vlc-ios` | [recipes/org.videolan.vlc-ios.ini](recipes/org.videolan.vlc-ios.ini) | 960x600 | Free | Yes | Free | Default | `multi_framework_retag`, `network_entitlements` |
+| `com.goodiware.grpro` | [recipes/com.goodiware.grpro.ini](recipes/com.goodiware.grpro.ini) | 800x1000 | Free | Yes | Free | Default | `user_interface_idiom = pad`, `cffixed_user_home` |
+| `com.pcalc.mobile` | [recipes/com.pcalc.mobile.ini](recipes/com.pcalc.mobile.ini) | 420x680 | Free | Yes | Portrait | Default | `user_interface_idiom = pad`, `window_close_exit` |
+| `com.guro.javser` | [recipes/com.guro.javser.ini](recipes/com.guro.javser.ini) | 900x700 | Free | Yes | Free | Default | `background_tasks_redirect`, `reexport_bg` |
 
 ---
 

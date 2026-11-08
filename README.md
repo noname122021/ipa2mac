@@ -25,7 +25,7 @@ Available as an interactive double-clickable script (**`ipa2mac.command`**) and 
 - 🧩 **Modular Micro-Shims (`libshim.dylib`)**: Non-invasive dynamic runtime adaptation through dyld interposing and Objective-C swizzling. Shims intercept iOS-specific behaviors (missing `MPMoviePlayerController`, Game Center authentication loops, in-memory Keychain persistence, CoreAudio thread prioritization) without altering application logic.
 - 📐 **Declarative Window & Aspect-Ratio Locking**: Overcomes macOS WindowServer constraints (minimum titlebar widths, CAEAGLLayer distortion) using declarative aspect-fit scaling and touch coordinate remapping.
 - 🧠 **Heuristic Engine Detection**: Automatically identifies common game engines and frameworks (Unreal Engine 3, Unity Mono/IL2CPP, Cocos2d-x, Skiko Compose Multiplatform, PopCap, Native UIKit/Swift) and selects tailored compatibility profiles.
-- 📋 **Declarative Recipe Catalog**: Over 15 verified, ready-to-run recipes in `recipes/<bundle_id>.ini` with version tracking and inheritance support.
+- 📋 **Declarative Recipe Catalog**: Over 18 verified, ready-to-run recipes in `recipes/{bundle_id}[@{version}].ini` with automatic version fallback and inheritance support.
 
 ---
 
@@ -95,16 +95,16 @@ The bundle metadata is aligned with macOS Catalyst standards:
   ```
 - System Integrity Protection (SIP) can remain **fully enabled**.
 
-### Installation & Build
+### Installation
 
-Clone the repository and compile the native micro-shim:
+Clone the repository:
 
 ```bash
 git clone <repository-url>
 cd ipa2mac
-chmod +x ipa2mac.command engine/*.sh
-./engine/build_shim.sh
+chmod +x ipa2mac.command
 ```
+*(No manual compilation needed — `engine/patch_app.py` compiles modular shims JIT per application).*
 
 ### Option A: Double-Click in Finder (Interactive)
 
@@ -120,18 +120,21 @@ chmod +x ipa2mac.command engine/*.sh
    >
    ```
 3. Drag and drop your `.ipa` file into the Terminal window and hit **Enter**.
-4. The converted `.app` bundle is generated in the same folder as your IPA. Double-click it to run immediately!
+4. The converted `.app` bundle is generated alongside your IPA with live execution timers (`[  1.2s] [+] Successfully patched ...`). Ready to launch!
 
 ### Option B: Terminal CLI
 
-For automated pipelines, scripts, and terminal users:
+For scriptable pipelines, REPL, or command-line usage:
 
 ```bash
-# Convert an IPA using ipa2mac.command
-./ipa2mac.command /path/to/Game.ipa
+# Direct conversion
+python3 engine/patch_app.py /path/to/Game.ipa [output_dir]
 
-# Or directly invoke the conversion engine
-./engine/patch_app.sh /path/to/Game.ipa
+# Interactive REPL drag-and-drop loop
+python3 engine/patch_app.py
+
+# Or via shell launcher
+./ipa2mac.command /path/to/Game.ipa
 ```
 
 The patched application is finalized in-place and ready to launch:
@@ -147,16 +150,20 @@ open "/path/to/Game.app"
 
 | Application | Bundle ID | Tested Version | Tech Stack | Status |
 | :--- | :--- | :--- | :--- | :--- |
+| **Zenless Zone Zero** | `com.HoYoverse.Nap` | `3.3.1` | Unity / Metal / Wwise | 🟢 Verified / In-Game |
+| **CarX Street** | `com.carxtech.sr` | `1.24.0` | Unity 6000 (IL2CPP) / Metal | 🟢 Verified / 60 FPS |
 | **BADLAND** | `com.frogmindgames.dodge` | `3.4.3` | Frogmind C++ / Cocos2d-x | 🟢 Verified / 60 FPS |
 | **LIMBO** | `com.playdeadgames.limbo.ios` | `1.1.28` | Playdead C++ Engine | 🟢 Verified / 60 FPS |
 | **Monument Valley** | `com.ustwo.monumentvalley` | `2.10.2` | Unity 2020 (IL2CPP) | 🟢 Verified / 60 FPS |
 | **Alto's Adventure** | `com.snowman.alto` | `1.6.2` | Unity 5.1 (Mono) | 🟢 Verified / 60 FPS |
 | **Cut the Rope** | `com.zeptolab.cuttherope` | `2.7.1` | ZeptoLab C++ | 🟢 Verified / 60 FPS |
 | **Infinity Blade II** | `com.chairentertainment.IB2` | `1.3.5` | Unreal Engine 3 (Mobile) | 🟢 Verified / In-Game |
+| **DEVICE 6** | `com.simogo.devicesix` | `1.4` | Simogo Native ObjC | 🟢 Verified / Working |
 | **EcoFlow** | `com.ef.EcoFlow` | `6.11.0` | Native Swift / Metal | 🟢 Verified / Working |
 | **VLC for Mobile** | `org.videolan.vlc-ios` | `3.0.2` | Native Swift / libvlc | 🟢 Verified / Working |
 | **GoodReader Pro** | `com.goodiware.grpro` | `5.6.1119` | Native ObjC / C++ | 🟢 Verified / Working |
 | **PCalc** | `com.pcalc.mobile` | `3.7.5` | Native CocoaTouch / C | 🟢 Verified / Working |
+| **JAVser** | `com.guro.javser` | `1.0.0` | Compose Multiplatform (Kotlin) | 🟢 Verified / Working |
 
 For full technical teardowns, planned Tier 2 targets (35+ apps), and engine-specific quirks, refer to:
 👉 **[Full Compatibility Matrix & Target Catalog (COMPATIBILITY.md)](COMPATIBILITY.md)**
@@ -169,9 +176,12 @@ For full technical teardowns, planned Tier 2 targets (35+ apps), and engine-spec
 
 ### Using Recipes
 
-Recipes live directly in the `recipes/` directory. When patching an application, `ipa2mac` automatically checks for a matching recipe (`recipes/<bundle_id>.ini`) and bundles it into the app.
+Recipes live in the `recipes/` directory. When patching an application, `ipa2mac` resolves recipes using version-specific fallback:
+1. `recipes/{bundle_id}@{version}.ini` (exact version match)
+2. `recipes/{bundle_id}.ini` (unversioned default)
+3. Recipe inheritance via `target_ini = ...`
 
-To add or customize a recipe, simply place a `<bundle_id>.ini` file into the `recipes/` folder.
+To add or customize a recipe, place `{bundle_id}.ini` or `{bundle_id}@{version}.ini` into the `recipes/` folder.
 
 ### Recipe Example (`recipes/com.playdeadgames.limbo.ios.ini`)
 
@@ -247,14 +257,15 @@ With this diagnostic data, missing iOS APIs, audio session deadlocks, or window 
 ├── README.md                 # Project documentation and quick start
 ├── LICENSE                   # MIT License (2026, ipa2mac contributors)
 ├── COMPATIBILITY.md          # Complete compatibility matrix and engine catalog
-├── ipa2mac.command           # Double-clickable Finder script (terminal drag-and-drop)
+├── ipa2mac.command           # Double-clickable Finder launcher script (drag-and-drop REPL)
 ├── engine/
-│   ├── patch_app.sh          # Core CLI conversion and JIT patching engine
-│   ├── build_shim.sh         # Standalone shim compilation script
-│   ├── insert_dylib.py       # Mach-O LC_LOAD_DYLIB injection script
-│   ├── modules/              # Clean JIT micro-shim source modules
-│   └── libshim.dylib         # Compiled default micro-shim binary
-├── recipes/                  # Declarative INI quirks and configuration catalog
+│   ├── patch_app.py          # Core Python conversion engine (CLI, REPL, JIT shim compilation)
+│   ├── insert_dylib.py       # Mach-O LC_LOAD_DYLIB injection utility
+│   ├── modules/              # Modular JIT micro-shim source files (*.m, *.c)
+│   └── build_shim.sh         # Helper script for building standalone universal shim
+├── tests/
+│   └── verify_recipes.py     # Backward compatibility and recipe verification suite
+├── recipes/                  # Declarative quirks catalog ({bundle_id}[@{version}].ini)
 │   ├── com.chairentertainment.IB2.ini
 │   ├── com.frogmindgames.dodge.ini
 │   ├── com.playdeadgames.limbo.ios.ini

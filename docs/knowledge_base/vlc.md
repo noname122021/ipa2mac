@@ -17,79 +17,52 @@ Authoritative case study and technical post-mortem for running VLC for Mobile on
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-VLC for Mobile — популярнейший открытый мультимедийный комбайн, способный воспроизводить любые аудио- и видеокодеки без конвертации.
+VLC for Mobile is an open-source media player supporting nearly all audio and video formats without prior transcoding.
 
-Тестирование проходило на шагах 113–120 диалога (коммиты `bcdd7e5`, `b7790b7`, `dd467df`). Этот кейс заставил кардинально расширить функциональность скрипта `patch_app.sh`, заложив основу для рекурсивного патчинга вложенных динамических библиотек и фреймворков.
+This case prompted the recursive traversal and retagging of embedded dynamic frameworks and dylibs across complex iOS app bundles.
 
 ---
 
-## 3. Что вызывало баг (Root Cause)
+## 3. Root Cause Analysis
 
-### 3.1. Крах dyld на вложенных фреймворках (`wrong platform`)
-При начальной реализации `vtool` модифицировал только главный исполняемый файл `Payload/VLC for iOS.app/VLC for iOS`. Однако VLC содержит тяжелые скомпилированные динамические фреймворки в каталоге `Frameworks/`:
-- `MobileVLCKit.framework` (сам движок libvlc, кодеки FFmpeg, демультиплексоры)
-- `MediaLibraryKit.framework` (индексация локальных медиа-файлов)
+### 3.1. dyld Platform Mismatch on Embedded Frameworks (`wrong platform`)
+Initially, platform conversion only touched the main executable `Payload/VLC for iOS.app/VLC for iOS`. However, VLC packages dynamic frameworks inside `Frameworks/`:
+- `MobileVLCKit.framework` (libvlc engine, FFmpeg decoders, demuxers)
+- `MediaLibraryKit.framework` (local media indexing)
 
-При запуске системный загрузчик dyld немедленно падал:
+On launch, dyld immediately aborted:
 ```text
 dyld: Library not loaded: @rpath/MobileVLCKit.framework/MobileVLCKit
   Referenced from: /Payload/VLC for iOS.app/VLC for iOS
   Reason: mach-o, but wrong platform (expected 6 [Mac Catalyst], got 2 [iOS])
 ```
 
-### 3.2. Нарушение подписи вложенных dylib (`Code Signature Invalid`)
-Изменение Mach-O заголовка во вложенном фреймворке без инвалидации и повторной подписи приводило к отказу ядра macOS загружать библиотеку в общее адресное пространство процесса.
+### 3.2. Invalid Dynamic Library Signatures (`Code Signature Invalid`)
+Modifying Mach-O platform headers inside embedded frameworks invalidated their signatures, causing the macOS kernel to reject loading them into the process address space.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 4. Applied Mitigations
 
-### 4.1. Автоматический рекурсивный обход и конвертация Mach-O в `patch_app.sh`
-Мы модернизировали процедуру конвертации, добавив рекурсивный поиск всех исполняемых бинарников внутри бандла:
-
+### 4.1. Recursive Mach-O Retagging in `patch_app.py`
+`patch_app.py` recursively traverses the app bundle, locates all nested dynamic libraries, thins them to `arm64`, and retags each Mach-O header:
 ```bash
-# Recursively patch frameworks and dylibs
-find "$APP_BUNDLE" -type f ! -name "libshim.dylib" | while read -r file; do
-    if file "$file" | grep -q "Mach-O"; then
-        chmod +x "$file" 2>/dev/null || true
-        if [ "$file" != "$MAIN_BIN" ]; then
-            patch_binary "$file"
-        fi
-    fi
-done
+# Handled automatically in patch_app.py for every embedded framework
+vtool -set-build-version maccatalyst 14.0 14.0 -replace -output "$TARGET" "$TARGET"
 ```
 
-Где процедура `patch_binary` выполняет:
-1. Выделение среза `arm64` через `lipo -thin arm64`.
-2. Замену платформы на Mac Catalyst 14.0 через `vtool -set-build-version maccatalyst 14.0 14.0 -replace`.
-
-### 4.2. Иерархическая ad-hoc переподпись «снизу вверх»
-```bash
-# 1. Подписываем вложенные Mach-O файлы
-find "$APP_BUNDLE" -type f ! -name "libshim.dylib" | while read -r f; do
-    if file "$f" | grep -q "Mach-O"; then
-        codesign -f -s - "$f" 2>/dev/null || true
-    fi
-done
-
-# 2. Подписываем структуру .framework каталогов
-find "$APP_BUNDLE/Frameworks" -type d -name "*.framework" 2>/dev/null | while read -r fw; do
-    codesign -f -s - "$fw" 2>/dev/null || true
-done
-
-# 3. Финальная глубокая подпись всего App Bundle
-codesign -f -s - --deep "$APP_BUNDLE"
-```
+### 4.2. Hierarchical Bottom-Up Ad-Hoc Signing
+Codesigns individual nested dynamic libraries first, then `.framework` bundles, and finally the top-level application bundle (`codesign -f -s - --deep`).
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / Fully Working Media Player**
-- **Возможности**: Аппаратное воспроизведение видеофайлов (MKV, MP4, AVI) через libvlc, свободное изменение размера окна с авто-масштабированием видеопотока, работающий аудиотракт CoreAudio.
-- **Рецептурный файл**: `recipes/org.videolan.vlc-ios.ini`
+- **Status**: **Verified / Fully Working Media Player**
+- **Capabilities**: Hardware-accelerated media decoding (MKV, MP4, AVI) via libvlc, free window resizing with responsive video layer scaling, and CoreAudio multi-channel audio output.
+- **Recipe File**: `recipes/org.videolan.vlc-ios.ini`
 
 ```ini
 [metadata]

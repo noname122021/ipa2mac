@@ -17,42 +17,40 @@ Authoritative case study and technical post-mortem for running JAVser on Apple S
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-JAVser представлял собой современное iOS-приложение (iOS 16+), построенное на стеке **Kotlin Multiplatform + Jetpack Compose for iOS** с рендерингом на графическом движке **Skiko (Metal)** и сетевым видеоплеером на базе **AVFoundation**.
+JAVser is a modern iOS application (iOS 16+) built on **Kotlin Multiplatform + Jetpack Compose for iOS**, using **Skiko (Metal)** for UI rendering and **AVFoundation** for network video playback.
 
-Задача решалась на поздних этапах проекта (шаги ~3300–3340 диалога, коммиты `bb754c8` и `dd467df`). В ходе тестирования был задействован специализированный субагент **AVFoundation & Shim Diagnostic** (`821ef64d-6a66-44dd-9939-a6df20aec801`), выявивший критический побочный эффект «глобального шимминга» на современные видеопотоки.
+This case highlighted the hazards of global shimming and established the zero-leakage, recipe-isolated shim architecture.
 
 ---
 
-## 3. Что вызывало баг (Root Cause)
+## 3. Root Cause Analysis
 
-### 3.1. Недостающие символы BackgroundTasks (`_OBJC_CLASS_$_BGContinuedProcessingTaskRequest`)
-При запуске бинарника dyld немедленно падал с ошибкой разрешения динамических символов:
+### 3.1. Missing BackgroundTasks Symbols (`_OBJC_CLASS_$_BGContinuedProcessingTaskRequest`)
+On startup, dyld failed with an unresolved dynamic symbol:
 ```text
 dyld: Symbol not found: _OBJC_CLASS_$_BGContinuedProcessingTaskRequest
   Referenced from: /Payload/JAVser.app/JAVser
   Expected in: /System/Library/Frameworks/BackgroundTasks.framework/BackgroundTasks
 ```
-В iOS 16+ появился класс `BGContinuedProcessingTaskRequest`, который в macOS Catalyst 14.0 отсутствовал в системном фреймворке `BackgroundTasks.framework`.
+iOS 16 introduced `BGContinuedProcessingTaskRequest`, which was absent from macOS Catalyst 14.0 `BackgroundTasks.framework`.
 
-### 3.2. Вечный фриз сетевого видеотранслятора (`AVPlayer`)
-Интерфейс приложения загружался, каталоги отображались, однако при нажатии на воспроизведение видео плеер зависал на нулевой секунде с вечным индикатором буферизации. 
-
-Глубокий анализ потоков и CoreMedia показал комплексную причину:
-1. **Захват и повреждение `AVAudioSession`**: В ранней монолитной версии `shim.m` конструктор `init_audio_early` безусловно подменял методы `AVAudioSession` для всех приложений подряд. Селектор `opaqueSessionID` возвращал фиктивное число `10001`. Для работы `AVPlayerItem` и синхронизации часов `CoreMedia` (Master Timebase Clock) аудиосессия обязана была зарегистрироваться в системном демоне `mediaserverd`. Получив некорректный ID сессии, аудиовывод блокировал синхронизацию таймлайна, и `AVPlayer` бесконечно ждал готовности аудиотракта.
-2. **Коллизия фреймворка BackgroundTasks**: Скрипт `patch_app.sh` безусловно перенаправлял `BackgroundTasks.framework` на `libshim.dylib` через `install_name_tool`, а `build_shim.sh` реэкспортировал системный фреймворк. Это вызвало конфликт классов `Class BGTaskScheduler is implemented in both...`, ломая системные загрузчики медиа-ассетов.
-3. **Глобальное подавление dyld callbacks**: Перехват `_dyld_register_func_for_add_image` глушил регистрацию динамических декодеров `VideoToolbox` (`VTVideoDecoder`), не позволяя аппаратно декодировать H.264/HEVC.
+### 3.2. Network Video Playback Freeze (`AVPlayer`)
+While the Compose UI rendered normally, video playback froze at 00:00 with an infinite buffering spinner:
+1. **Audio Session Corruption**: Unconditional early `AVAudioSession` stubs returning dummy `opaqueSessionID = 10001` prevented `CoreMedia` from synchronizing its master timebase against `mediaserverd`.
+2. **Framework Collision**: Blindly redirecting `BackgroundTasks.framework` to `libshim.dylib` caused duplicate class warnings (`Class BGTaskScheduler is implemented in both...`), breaking asset decoders.
+3. **Suppressed dyld Callbacks**: Global no-op interposing of `_dyld_register_func_for_add_image` prevented `VideoToolbox` dynamic decoder registration (`VTVideoDecoder`).
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 4. Applied Mitigations
 
-### 4.1. Архитектурный переход к рецептурному изолированию (Zero-Leakage Shims)
-Мы разделили агрессивные хаки для старых игр и нативные мультимедийные интерфейсы. В `patch_app.sh` и `mod_audio_legacy.m` включение хуков `AVAudioSession` стало строгим: только если в `recipe.ini` явно указано `audio_session_fix = true`. Для JAVser эта опция отключена.
+### 4.1. Recipe Isolation (Zero-Leakage Shims)
+Strictly separated legacy game workarounds from modern media APIs. In `engine/patch_app.py`, `AVAudioSession` interposing is gated exclusively behind `audio_session_fix = true`. JAVser leaves the native audio session unhooked.
 
-### 4.2. Стабы классов BackgroundTasks (`mod_bg_classes.m`)
-Вместо грязного перенаправления всего фреймворка мы создали чистые заглушки недостающих классов в Objective-C:
+### 4.2. Objective-C BackgroundTasks Stubs (`mod_bg_classes.m`)
+Provided lightweight class stubs without redirecting unaffected system symbols:
 
 ```objc
 #import <Foundation/Foundation.h>
@@ -73,30 +71,19 @@ dyld: Symbol not found: _OBJC_CLASS_$_BGContinuedProcessingTaskRequest
 @implementation BGProcessingTaskRequest @end
 ```
 
-### 4.3. Выборочное перенаправление фреймворка в `patch_app.sh`
-```bash
-# Redirect BackgroundTasks.framework ONLY if enabled or if missing symbols detected
-if [ "$BG_REDIRECT" = "true" ] || strings "$bin" 2>/dev/null | grep -q "BGContinuedProcessingTask"; then
-    if otool -L "$bin" 2>/dev/null | grep -q "BackgroundTasks.framework"; then
-        echo "    [-] Redirecting BackgroundTasks.framework to libshim.dylib..."
-        local bg_path=$(otool -L "$bin" | grep "BackgroundTasks.framework" | awk '{print $1}')
-        if [ -n "$bg_path" ]; then
-            install_name_tool -change "$bg_path" "@executable_path/libshim.dylib" "$bin" 2>/dev/null || true
-        fi
-    fi
-fi
-```
+### 4.3. Selective Framework Redirection in `patch_app.py`
+`patch_app.py` inspects binaries and only redirects `BackgroundTasks.framework` via `install_name_tool` when `background_tasks_redirect = true` is explicitly specified in the recipe.
 
-### 4.4. Пропуск регистрации dynamic image callbacks
-В `mod_dyld_fishhook.c` регистрация функций в dyld подавляется только при наличии флага `dyld_fishhook_suppress = true`. В остальных случаях вызов прозрачно передается в системный `libdyld.dylib`, сохраняя регистрацию кодеков VideoToolbox.
+### 4.4. Pass-Through dyld Callbacks
+`dyld_fishhook_suppress.c` only suppresses image registration when `dyld_fishhook_suppress = true`. In all other cases, calls transparently pass to `libdyld`, preserving VideoToolbox hardware acceleration.
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / Fully Working**
-- **UI / UX**: Идеальный рендеринг Jetpack Compose через Skiko/Metal, плавный скроллинг списков, стабильное онлайн-воспроизведение видео со звуком без задержек.
-- **Рецептурный файл**: `recipes/com.guro.javser.ini`
+- **Status**: **Verified / Fully Working**
+- **UI / UX**: Jetpack Compose rendered cleanly via Skiko/Metal, smooth list scrolling, hardware-accelerated H.264/HEVC streaming video with synchronized audio.
+- **Recipe File**: `recipes/com.guro.javser.ini`
 
 ```ini
 [metadata]

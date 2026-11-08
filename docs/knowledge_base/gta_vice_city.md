@@ -17,60 +17,60 @@ Authoritative case study and technical post-mortem for running GTA Vice City on 
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-Grand Theft Auto: Vice City — культовый открытый 3D-мир от Rockstar Games, портированный студией War Drum Studios на мобильные платформы к 10-летнему юбилею игры.
+Grand Theft Auto: Vice City by Rockstar Games was adapted for mobile platforms by War Drum Studios for its 10th anniversary.
 
-Проект присутствует в эталонном каталоге `apps_test/gta_vice_city` и запускается через `run_gta_vice_city.command`. Кейс доказал возможность запуска классических тяжелых C++ игровых движков начала 2010-х годов с трехмерным открытым миром, транспортом и потоковым воспроизведением радиостанций.
-
----
-
-## 3. Что вызывало баг (Root Cause)
-
-### 3.1. Запись сейвов и настроек в несуществующую песочницу
-War Drum Studios использует собственную реализацию сохранения состояния мира (`save.b`) и конфигурации управления (`setting.a`). При отсутствии прав записи в домашний каталог пользователя процесс завершался аварийно при попытке создать файл автосохранения после первой вступительной кат-сцены у отеля Ocean View.
-
-### 3.2. Нарушение работы аудиотракта OpenAL при инициализации
-Игра использует низкоуровневые контексты OpenAL (`alcOpenDevice`, `alcCreateContext`) с аппаратным микшированием десятков источников звука (моторы машин, шум волн, радиостанции, диалоги). При блокировке `AVAudioSession` в Mac Catalyst системный звуковой сервер не выделял аппаратный аудиодевайс, приводя к зависанию на черном экране с логотипом Rockstar North.
-
-### 3.3. Сенсорное управление и координаты виртуального джойстика
-Вся схема управления (газ, тормоз, стрельба, выбор радио) была жестко завязана на экранный тач-интерфейс.
+This case confirmed the feasibility of running early 2010s heavy C++ 3D open-world engines featuring streaming vehicle models and audio radio broadcasts under macOS Catalyst.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 3. Root Cause Analysis
 
-### 4.1. Конвертация заголовка платформы и инъекция dylib
+### 3.1. Save Game and Config Storage in Sandbox Root
+War Drum Studios implements proprietary world save serialization (`save.b`) and control configs (`setting.a`). Without sandbox container write permissions, the game crashed when creating an autosave file after the opening Ocean View Hotel cutscene.
+
+### 3.2. OpenAL Audio Device Initialization
+The game uses low-level OpenAL contexts (`alcOpenDevice`, `alcCreateContext`) for hardware mixing across dozens of concurrent sound sources (engines, waves, radio stations, dialogue). When `AVAudioSession` hung in Mac Catalyst, the system audio server refused hardware device allocation, locking the app on a black screen.
+
+### 3.3. Touch Virtual Controls
+Gameplay inputs (throttle, steering, weapon selection, radio tuning) rely on touch coordinates mapped to virtual buttons.
+
+---
+
+## 4. Applied Mitigations
+
+### 4.1. Platform Retagging and Shim Injection
 ```bash
-# Конвертация Mach-O платформы
+# Retag Mach-O platform to Catalyst
 vtool -set-build-version maccatalyst 14.0 14.0 -replace \
     -output apps_test/gta_vice_city/Payload/gta3vc.app/gta3vc \
     apps_test/gta_vice_city/Payload/gta3vc.app/gta3vc
 
-# Подключение libshim.dylib через загрузочную команду
-python3 ipa2mac/engine/insert_dylib.py \
+# Inject LC_LOAD_DYLIB via Python utility
+python3 engine/insert_dylib.py \
     apps_test/gta_vice_city/Payload/gta3vc.app/gta3vc \
     "@executable_path/libshim.dylib"
 ```
 
-### 4.2. Изоляция файлов сохранения через `CFFIXED_USER_HOME`
-В конструкторе `libshim.dylib` настраивается безопасный доступ к документам:
+### 4.2. Save File Isolation via `CFFIXED_USER_HOME`
+In `libshim.dylib`:
 ```objc
 NSString *docPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
 setenv("CFFIXED_USER_HOME", [docPath UTF8String], 1);
 ```
-Все сейв-файлы Tommy Vercetti корректно записываются и загружаются между перезапусками.
+Game saves persist reliably between sessions inside `~/Documents`.
 
-### 4.3. Аппаратный спуфинг `iPad8,1` (`mod_device_spoof.c`)
-Спуфинг модели через `sysctl` и `uname` активирует поддержку увеличенной дальности прорисовки (Draw Distance), теней высокого разрешения и динамического освещения неоновых вывесок Вайс-Сити.
+### 4.3. Hardware Model Spoofing (`device_spoof.c`)
+Spoofing `iPad8,1` via `sysctl` and `uname` enables maximum draw distance, high-resolution dynamic shadows, and enhanced lighting.
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / Fully Playable Open-World**
-- **Игровой процесс**: Томми Версетти свободно перемещается по городу, угоняет спорткары, стреляет, слушает все радиостанции (Flash FM, Wave 103, V-Rock) в идеальном стереозвучании, миссии сохраняются и загружаются.
-- **Скрипт запуска**: `apps_test/run_gta_vice_city.command`
+- **Status**: **Verified / Fully Playable Open-World**
+- **Gameplay**: Full world navigation, driving, shooting, all radio stations (Flash FM, Wave 103, V-Rock) streaming in stereo, mission save and reload verified.
+- **Launcher Script**: `apps_test/run_gta_vice_city.command`
 ```bash
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -17,36 +17,33 @@ Authoritative case study and technical post-mortem for running Cut the Rope on A
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-Cut the Rope от российской студии ZeptoLab — исторический хит физических головоломок с Ам Нямом (Om Nom), оптимизированный изначально под экраны iPhone 3.5" (320x480) и 4" (320x568).
+Cut the Rope by ZeptoLab is a physics puzzle classic featuring Om Nom, originally designed for iPhone 3.5" (320x480) and 4" (320x568) displays.
 
-Адаптация началась на шагах 107–150 диалога (коммиты `bcdd7e5`, `b7790b7`, `dd467df`). Задача стала ключевым тестом для преодоления жестких ограничений оконного менеджера macOS WindowServer и сопоставления экранных координат курсора.
-
----
-
-## 3. Что вызывало баг (Root Cause)
-
-### 3.1. Аппаратное ограничение WindowServer: Правило 515 pt
-В macOS WindowServer действует жесткое ограничение: окно со стандартным заголовком (`NSWindowStyleMaskTitled`) не может иметь ширину меньше ~515 пунктов. Попытка задать прямое телефонное разрешение iPhone (320x480) через `[NSWindow setContentSize:]` игнорируется системой — окно принудительно расширяется до 515 pt, вызывая искажение или растянутые черные полосы по краям.
-
-### 3.2. Рассинхронизация координат тач-событий (`UITouch`)
-Чтобы сохранить соотношение сторон 2:3 (320:480), слой отрисовки `CAEAGLLayer` был отмасштабирован и отцентрирован внутри окна AppKit. Однако события кликов мыши передавались через `-[UITouch locationInView:]` в физических координатах окна macOS. 
-
-В результате возникла **критическая рассинхронизация**: курсор мыши визуально находился над веревкой, но игра считывала координаты со смещением и в другом масштабе. Веревки не разрезались, леденец не падал, игра была непроходима.
-
-### 3.3. Крах `SIGSEGV 11` внутри `realizeClassWithoutSwift`
-При использовании неквалифицированных версий `libshim.dylib` происходило повреждение метаданных рантайма Objective-C при загрузке legacy-классов UIKit.
+This target served as the primary benchmark for solving macOS WindowServer minimum window width limits and mapping pointer coordinates to scaled render layers.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 3. Root Cause Analysis
 
-### 4.1. Двухуровневое центрирование `CALayerHost` / `CAEAGLLayer`
-Окно конфигурируется с соотношением 2:3 (360x540 или 540x810), а слой OpenGL ES центрируется с вычислением масштаба `g_layerScale` и отступов `g_layerOffsetX`, `g_layerOffsetY`.
+### 3.1. WindowServer Hardware Constraint: 515 pt Minimum Width
+macOS WindowServer enforces a hard minimum width of ~515 pt for standard titled windows (`NSWindowStyleMaskTitled`). Attempting to force direct iPhone resolutions (320x480) via `[NSWindow setContentSize:]` is clamped by the window server, creating wide black margins or aspect distortion.
 
-### 4.2. Матричный пересчет координат в `mod_touch_remap.m`
-Перехват методов `-[UITouch locationInView:]` и `-[UITouch previousLocationInView:]`. Точки клика и траектории свайпа трансформируются обратной матрицей масштабирования:
+### 3.2. Touch Event Desynchronization (`UITouch`)
+To maintain the 2:3 aspect ratio, the `CAEAGLLayer` render target was scaled and centered inside the AppKit host window. However, mouse click coordinates passed into UIKit via `-[UITouch locationInView:]` arrived in macOS window coordinates.
+
+This mismatch prevented touch events from reaching game elements: mouse swipes appeared visually aligned with ropes, but the engine read offset coordinates, leaving ropes unsevered and levels unplayable.
+
+---
+
+## 4. Applied Mitigations
+
+### 4.1. Aspect-Fit Layer Centering
+The AppKit window enforces a 2:3 aspect constraint (360x540 or 540x810), while the rendering layer computes scale factors `g_layerScale` and padding offsets `g_layerOffsetX`, `g_layerOffsetY`.
+
+### 4.2. Matrix Coordinate Remapping (`touch_remapping.m`)
+Swizzled `-[UITouch locationInView:]` and `-[UITouch previousLocationInView:]` to transform click points and drag trajectories through an inverse scaling matrix:
 
 ```objc
 #import <UIKit/UIKit.h>
@@ -61,7 +58,6 @@ static CGPoint (*orig_prevLocInView)(id, SEL, id) = NULL;
 
 static CGPoint hook_locInView(id self, SEL _cmd, id view) {
     CGPoint pt = orig_locInView ? orig_locInView(self, _cmd, view) : CGPointZero;
-    // Применяем обратное масштабирование координат
     pt.x = (pt.x - g_layerOffsetX) / (g_layerScale > 0.001 ? g_layerScale : 1.0);
     pt.y = (pt.y - g_layerOffsetY) / (g_layerScale > 0.001 ? g_layerScale : 1.0);
     return pt;
@@ -93,16 +89,16 @@ static void init_touch_remap(void) {
 }
 ```
 
-### 4.3. Фиксация виртуального разрешения экрана
-Спуфинг `[UIScreen mainScreen].bounds` возвращает виртуальные координаты `320x480` (nativeBounds `640x960`), благодаря чему физический движок Box2D производит расчеты в оригинальной метрике.
+### 4.3. Virtual Screen Bounds Spoofing
+Spoofing `[UIScreen mainScreen].bounds` to return virtual `320x480` (nativeBounds `640x960`) ensures internal Box2D physics calculations evaluate with original display metrics.
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / 60 FPS Pixel-Perfect**
-- **Игровой процесс**: Мышь и тачпад режут веревки с хирургической точностью, мыльные пузыри лопаются, конфеты раскачиваются с оригинальной физикой, звук поедания леденца и победные фанфары воспроизводятся безупречно.
-- **Рецептурный файл**: `recipes/com.zeptolab.cuttherope.ini`
+- **Status**: **Verified / 60 FPS Pixel-Perfect**
+- **Gameplay**: Mouse and trackpad gestures slice ropes with sub-pixel precision, bubbles pop accurately, candy swings with correct Box2D dynamics, audio effects play cleanly.
+- **Recipe File**: `recipes/com.zeptolab.cuttherope.ini`
 
 ```ini
 [metadata]

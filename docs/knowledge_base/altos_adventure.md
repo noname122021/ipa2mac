@@ -17,34 +17,34 @@ Authoritative case study and technical post-mortem for running Alto's Adventure 
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-Alto's Adventure от студии Snowman — атмосферный процедурный сноубординг по заснеженным холмам, построенный на ранней 64-битной версии движка Unity 5.
+Alto's Adventure by Snowman is an atmospheric procedural snowboarding game built on an early 64-bit version of Unity 5.
 
-Тестирование и адаптация проводились на шагах 110–140 диалога (коммиты `bcdd7e5`, `b7790b7`, `dd467df`). Кейс стал ключевым подтверждением работоспособности эмуляции облачного хранилища iCloud (KVS) в изолированной среде.
+This case served as the primary validation for in-memory iCloud Key-Value Store (KVS) emulation in an un-entitled runtime environment.
 
 ---
 
-## 3. Что вызывало баг (Root Cause)
+## 3. Root Cause Analysis
 
-### 3.1. Фатальный ассерт при обращении к iCloud KVS
-Сразу после логотипа Snowman игра падала с системным ассертом:
+### 3.1. Fatal Assertion in iCloud KVS
+Immediately after the Snowman logo, the game aborted with a system assertion:
 ```text
 *** Assertion failure in -[NSUbiquitousKeyValueStore init], NSUbiquitousKeyValueStore.m:64
 BUG IN CLIENT OF KVS: NSUbiquitousKeyValueStore initialized without entitlement
 Abort trap: 6
 ```
-**Причина**: Движок Unity 5 при старте подсистемы сохранений пытается синхронизировать рекорды расстояния, монеты и открытых персонажей через `[NSUbiquitousKeyValueStore defaultStore]`. На Mac Catalyst вызов этого API у приложения без платной подписи Apple Developer Program и активированного entitlement `com.apple.developer.ubiquity-kvstore-identifier` карается мгновенным `SIGABRT`.
+**Cause**: When initializing save management, Unity 5 attempts to sync distances, coins, and characters via `[NSUbiquitousKeyValueStore defaultStore]`. Under Mac Catalyst, invoking this API without a paid Apple Developer identity and the `com.apple.developer.ubiquity-kvstore-identifier` entitlement raises an unrecoverable `SIGABRT`.
 
-### 3.2. Преждевременное завершение процесса при отпускании кнопки мыши (Mouse-Up Trap)
-При одиночном клике (прыжок сноубордиста) обработчик событий AppKit перехватывал событие `mouseUp` как закрытие модального контекста, инициируя завершение приложения.
+### 3.2. Premature Process Exit on Mouse-Up
+During single clicks (jumping), AppKit event dispatching interpreted the `mouseUp` event as closing a modal context, triggering an application shutdown.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 4. Applied Mitigations
 
-### 4.1. Полнофункциональный In-Memory мок `NSUbiquitousKeyValueStore` (`mod_ubiquitous.m`)
-Свиззлинг методов `defaultStore`, `objectForKey:`, `stringForKey:`, `longLongForKey:`, `setObject:forKey:` и `synchronize` с сохранением данных в статический словарь `CFMutableDictionaryRef`:
+### 4.1. In-Memory Mock for `NSUbiquitousKeyValueStore` (`ubiquitous_store.m`)
+Swizzled `defaultStore`, `objectForKey:`, `stringForKey:`, `longLongForKey:`, `setObject:forKey:`, and `synchronize`, retaining key-value pairs in a static `CFMutableDictionaryRef`:
 
 ```objc
 #import <Foundation/Foundation.h>
@@ -105,16 +105,16 @@ static void init_ubiquitous_store(void) {
 }
 ```
 
-### 4.2. Защита события Mouse-Up (`window_close_guard`)
-Фильтрация событий отпускания кнопки мыши для предотвращения ложного закрытия окна во время выполнения бэкфлипов и прыжков.
+### 4.2. Mouse-Up Event Protection (`window_close_guard`)
+Filtered spurious mouse-up close triggers during gameplay inputs (jumps and backflips).
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / 60 FPS Solid**
-- **Игровой процесс**: Процедурная смена дня и ночи, погодные бури и молнии, сбор монет, сальто через пропасти, управление пробелом или кликом мыши, полное сохранение прогресса в сессии.
-- **Рецептурный файл**: `recipes/com.snowman.alto.ini`
+- **Status**: **Verified / 60 FPS Solid**
+- **Gameplay**: Procedural day/night cycle, weather storms, coin collection, tricks across chasms, spacebar and mouse click controls, full session progress retention.
+- **Recipe File**: `recipes/com.snowman.alto.ini`
 
 ```ini
 [metadata]

@@ -17,31 +17,31 @@ Authoritative case study and technical post-mortem for running DEVICE 6 on Apple
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-DEVICE 6 от шведской студии Simogo — один из самых оригинальных шедевров интерактивного повествования в истории iOS, удостоенный Apple Design Award.
+DEVICE 6 by Simogo is an interactive narrative puzzle adventure designed specifically around physical iPad handling and orientation.
 
-Адаптация проводилась на шагах 3340–3350 диалога (коммиты `bb754c8` и `dd467df`). В решении участвовал субагент **UI & Layout Compatibility** (`44ff3260-0bd2-4746-a5dd-95638a131f20`), которому предстояло решить уникальную геймдизайнерскую проблему адаптации мобильного управления под десктоп.
-
----
-
-## 3. Что вызывало баг (Root Cause)
-
-### 3.1. Геймплейная зависимость от физического поворота устройства
-В DEVICE 6 текст книги и аудиовизуальные улики буквально разветвляются по экрану в разных направлениях. Чтобы продолжить чтение, игрок обязан физически поворачивать планшет iPad в руках на 90°, 180° и 270°. На настольном компьютере Mac или ноутбуке MacBook физический поворот корпуса невозможен.
-
-### 3.2. Отсутствие акселерометра и заблокированная ориентация в Mac Catalyst
-Mac Catalyst работает в фиксированной оконной парадигме и не предоставляет доступа к аппаратному датчику гравитации (акселерометру). Вызовы `[UIDevice currentDevice].orientation` всегда возвращали `UIDeviceOrientationPortrait`, делая прохождение игры принципиально невозможным.
-
-### 3.3. Необходимость сохранения фиксированного планшетного соотношения 3:4
-При свободной растяжке окна текст романа распадался на несвязанные фрагменты. Игре требовалось строгое соблюдение пропорций экрана iPad (3:4).
+Adapting this game required addressing a unique design challenge: translating device-tilt gameplay mechanics into a desktop-friendly interface.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 3. Root Cause Analysis
 
-### 4.1. Внедрение виртуального меню поворота в системный MenuBar (`mod_d6_rotation.m`)
-Мы разработали специальный модуль, который перехватывает инициализацию `NSApp mainMenu` и встраивает системное меню «Rotate Device» с горячими клавишами (`Cmd+R` / `Cmd+Shift+R`). Меню напрямую модифицирует внутреннее состояние `UIDevice` и рассылает системные нотификации:
+### 3.1. Gameplay Dependency on Physical Device Rotation
+In DEVICE 6, text lines and clues branch across the screen in four cardinal directions. Progressing through chapters requires physically rotating the tablet by 90°, 180°, and 270°. On a stationary Mac or MacBook, physical rotation is not feasible.
+
+### 3.2. Absence of Accelerometer and Locked Orientation in Catalyst
+Mac Catalyst runs in a windowed paradigm and lacks hardware accelerometer feeds. Calls to `[UIDevice currentDevice].orientation` consistently returned `UIDeviceOrientationPortrait`, completely blocking puzzle progression.
+
+### 3.3. Strict 3:4 iPad Geometry Requirement
+Unconstrained window resizing broke typographic alignment. The game requires a rigid 3:4 aspect ratio to keep narrative paths intact.
+
+---
+
+## 4. Applied Mitigations
+
+### 4.1. AppKit MenuBar Rotation Injection (`device_rotation_menu.m`)
+Integrated a custom menu item into the macOS system menu bar (`Cmd+R` / `Rotate Device`). The action updates `UIDevice` state and dispatches orientation notifications:
 
 ```objc
 #import <AppKit/AppKit.h>
@@ -78,14 +78,12 @@ static UIDeviceOrientation hook_deviceOrientation(id self, SEL _cmd) {
 
 __attribute__((constructor))
 static void init_d6_rotation(void) {
-    // Подменяем ориентацию в UIDevice
     Class uidevCls = objc_getClass("UIDevice");
     if (uidevCls) {
         Method m = class_getInstanceMethod(uidevCls, @selector(orientation));
         if (m) method_setImplementation(m, (IMP)hook_deviceOrientation);
     }
 
-    // Создаем пункт меню в AppKit
     dispatch_async(dispatch_get_main_queue(), ^{
         NSMenu *mainMenu = [NSApp mainMenu];
         if (!mainMenu) return;
@@ -105,16 +103,16 @@ static void init_d6_rotation(void) {
 }
 ```
 
-### 4.2. Жесткая фиксация соотношения сторон 3:4 (`mod_window.m`)
-В рецепте задана геометрия `768x1024` с aspect-fit центрированием, что точно воспроизводит размеры дисплея iPad Retina.
+### 4.2. Fixed 3:4 Aspect Clamp (`mod_window.m`)
+Configured `768x1024` geometry with aspect-fit letterboxing, replicating iPad Retina proportions.
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / Fully Playable Narrative Experience**
-- **Управление**: Скроллинг текста и интерактивные переключатели управляются трекпадом/мышью. При достижении поворотов сюжета игрок нажимает `Cmd+R` в меню, текст плавно вращается, а загадки разблокируются.
-- **Рецептурный файл**: `recipes/com.simogo.devicesix.ini`
+- **Status**: **Verified / Fully Playable Narrative Experience**
+- **Controls**: Scrolling and interaction map cleanly to mouse and trackpad. Pressing `Cmd+R` rotates typography dynamically, allowing all puzzles to be solved.
+- **Recipe File**: `recipes/com.simogo.devicesix.ini`
 
 ```ini
 [metadata]

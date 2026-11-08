@@ -17,32 +17,32 @@ Authoritative case study and technical post-mortem for running GoodReader Pro on
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-GoodReader Pro — один из самых мощных и долгоживущих мобильных просмотрщиков документов, PDF-редакторов и менеджеров файлов на платформе iOS.
+GoodReader Pro is an advanced document reader, PDF annotator, and file manager for iOS.
 
-Тестирование началось на шагах 107–120 диалога (коммиты `bcdd7e5`, `b7790b7`, `dd467df`). Пользователь зафиксировал мгновенный крэш: *«goodreader открыл, я нажал что принимаю лицензию и он закрылся, через секунду, может упал»*.
+During initial testing, accepting the license agreement caused an immediate crash.
 
 ---
 
-## 3. Что вызывало баг (Root Cause)
+## 3. Root Cause Analysis
 
-### 3.1. Песочница файловой системы и крах лицензии (`EACCES` / `SIGABRT`)
-При первом запуске GoodReader отображает диалог лицензионного соглашения. При нажатии кнопки «Accept» приложение сохраняет криптографический хэш подтверждения и инициализирует базу данных локальных файлов SQLite по пути:
+### 3.1. Filesystem Sandbox Collision on License Accept (`EACCES` / `SIGABRT`)
+On first launch, GoodReader shows a license dialog. Accepting writes a cryptographic token and initializes an SQLite database at:
 ```objc
 [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
 ```
-В среде Mac Catalyst для ad-hoc подписанных приложений без App Sandbox контейнера вызов `NSHomeDirectory()` возвращает реальную домашнюю папку пользователя `/Users/superuser`, куда приложение не имеет права создавать скрытые системные каталоги песочницы. SQLite возвращал ошибку `sqlite3_open_v2: unable to open database file`, после чего приложение вызывало защитный `abort()`.
+Under Mac Catalyst with ad-hoc signing, `NSHomeDirectory()` points to `/Users/<username>`. Writing hidden sandbox database files directly to user root failed with `sqlite3_open_v2: unable to open database file`, triggering a defensive `abort()`.
 
-### 3.2. Сплющивание двухпанельного интерфейса в мобильный (iPhone Idiom)
-По умолчанию macOS запускала приложение с телефонными метриками (`UIUserInterfaceIdiomPhone`), из-за чего пропадало дерево каталогов слева, а панель аннотаций PDF перекрывала текст.
+### 3.2. Two-Pane UI Flattened to Mobile Phone Layout
+By default, Catalyst initialized with phone metrics (`UIUserInterfaceIdiomPhone`), hiding the file directory tree on the left and overlapping PDF annotation toolbars.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 4. Applied Mitigations
 
-### 4.1. Перенаправление домашней папки через `CFFIXED_USER_HOME` (`utility_shim.m`)
-Внедрение конструктора, который гарантирует создание выделенного каталога `~/Documents` и переопределяет низкоуровневую переменную окружения CoreFoundation:
+### 4.1. CoreFoundation Sandbox Path Redirection (`CFFIXED_USER_HOME`)
+Ensured dedicated `~/Documents` container directory creation and redirected `CFFIXED_USER_HOME`:
 
 ```objc
 #import <Foundation/Foundation.h>
@@ -55,26 +55,25 @@ static void init_goodreader_storage(void) {
                                   withIntermediateDirectories:YES 
                                                    attributes:nil 
                                                         error:nil];
-        // Перенаправляем домашний путь для всех подсистем CoreFoundation / Cocoa
         setenv("CFFIXED_USER_HOME", [docPath UTF8String], 1);
         NSLog(@"[GoodReader-Shim] Redirected CFFIXED_USER_HOME to %@", docPath);
     }
 }
 ```
 
-### 4.2. Принудительное включение планшетного интерфейса (`user_interface_idiom = pad`)
-В `mod_window.m` свитчится селектор `-[UIDevice userInterfaceIdiom]`, возвращая значение `UIUserInterfaceIdiomPad` (`1`). Это автоматически разворачивает полноценный двухколоночный десктопный режим GoodReader с деревом файлов, панелью предпросмотра и закладками.
+### 4.2. Forcing Tablet Interface (`user_interface_idiom = pad`)
+Swizzled `-[UIDevice userInterfaceIdiom]` to return `UIUserInterfaceIdiomPad` (`1`). This restores GoodReader's two-column desktop interface with file trees, preview panels, and bookmark navigation.
 
-### 4.3. In-Memory Keychain для паролей к документам (`core_keychain.c`)
-Защищенные паролями PDF-файлы используют связку ключей для кэширования мастер-ключей AES. Стаб связки ключей возвращает статус успеха без сбоев авторизации.
+### 4.3. In-Memory Keychain for Encrypted Documents (`core_keychain.c`)
+Password-protected PDFs utilize keychain access to cache AES master keys. The in-memory keychain stub resolves authorization queries cleanly.
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / Fully Working Production Quality**
-- **Функционал**: Открытие многостраничных тяжелых PDF-документов, мгновенный зум, рисование пометок стилусом/мышью, просмотр локальных файлов, вкладки чтения.
-- **Рецептурный файл**: `recipes/com.goodiware.grpro.ini`
+- **Status**: **Verified / Fully Working Production Quality**
+- **Features**: Heavy multi-page PDF rendering, instant zoom, stylus/mouse annotations, local file navigation, and multi-tab reading.
+- **Recipe File**: `recipes/com.goodiware.grpro.ini`
 
 ```ini
 [metadata]

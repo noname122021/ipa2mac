@@ -17,44 +17,39 @@ Authoritative case study and technical post-mortem for running PCalc on Apple Si
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-PCalc стал исторически первым приложением, на котором проводилась верификация базовой гипотезы проекта `ipa2mac` (шаги 39–83 диалога, коммит `bcdd7e5`). 
+PCalc served as the foundational proof-of-concept for the `ipa2mac` runtime architecture.
 
-Задача заключалась в подтверждении фундаментального тезиса: не зашифрованный (`cryptid = 0`) 64-битный ARM64 бинарник iOS способен исполняться нативно на macOS (Apple Silicon M-серии) в режиме **Mac Catalyst** без процессорной эмуляции, если модифицировать заголовок `LC_BUILD_VERSION` и предоставить микро-шим для системных iOS API.
-
-Позднее (шаг 3627) поведение окна PCalc потребовало повторной калибровки, когда глобальные оконные правила `mod_window.m` исказили естественные пропорции калькулятора.
+The objective was to validate the core thesis: non-encrypted (`cryptid = 0`) 64-bit ARM64 iOS binaries run natively on Apple Silicon under Mac Catalyst (`LC_BUILD_VERSION platform 6`) with targeted micro-shims without CPU emulation or disabling SIP.
 
 ---
 
-## 3. Что вызывало баг (Root Cause)
+## 3. Root Cause Analysis
 
-При попытке прямого запуска расшифрованного iOS-бинарника на macOS возникли следующие блокирующие проблемы:
+### 3.1. AMFI Platform Enforcement (`SIGKILL (CODESIGN)`)
+macOS kernel-level AMFI rejects executing Mach-O binaries marked with iOS platform (`PLATFORM_IOS` = 2 in `LC_BUILD_VERSION`), terminating execution immediately with `SIGKILL`.
 
-### 3.1. Блокировка Gatekeeper и AMFI (`SIGKILL (CODESIGN)`)
-macOS на уровне ядра (AMFI) запрещает выполнение Mach-O бинарников с платформой `PLATFORM_IOS` (значение 2 в `LC_BUILD_VERSION`), помечая их как недействительные для подсистемы LaunchServices. Приложение моментально завершалось с кодом `SIGKILL (COREDUMP / CODESIGN)`.
+### 3.2. Crash on Keychain Queries (`errSecMissingEntitlement -34018`)
+On first launch, PCalc caches installation UUIDs and theme configurations in the iOS Keychain via `SecItemCopyMatching` and `SecItemAdd`. Under Mac Catalyst, macOS login keychain access requires the `keychain-access-groups` entitlement. Ad-hoc signed binaries lack this entitlement, causing Security.framework to return `-34018` (`errSecMissingEntitlement`), leading to an `abort()`.
 
-### 3.2. Крах при обращении к Keychain (`errSecMissingEntitlement -34018`)
-При первом запуске PCalc генерирует уникальный идентификатор установки и сохраняет пользовательские настройки (темы, раскладки клавиш) в iOS Keychain через вызовы `SecItemCopyMatching` и `SecItemAdd`. На Mac Catalyst доступ к связке ключей macOS требует обязательного entitlement `keychain-access-groups`. У ad-hoc подписанного бинарника этот entitlement отсутствует, в результате чего вызов возвращал ошибку `-34018` (`errSecMissingEntitlement`), приводя к аварийному завершению (`abort()`).
+### 3.3. Layout Distortion under Enforced Aspect Ratios
+Global aspect-ratio enforcement (16:9 / 3:4) compressed the calculator vertically into oval buttons and clipped the calculation tape. PCalc requires unconstrained adaptive resizing (`aspect_ratio = free`).
 
-### 3.3. Искажение лейаута при принудительном масштабировании
-Когда в шим была внедрена общая логика фиксации оконного соотношения сторон (16:9 / 3:4), интерфейс калькулятора сплющился по вертикали: кнопки стали овальными, лента расчетов обрезалась. PCalc изначально спроектирован под адаптивный UIKit-лейаут и требует свободного ресайзинга (`aspect_ratio = free`).
-
-### 3.4. Зависание фонового процесса при закрытии окна
-При нажатии на красную кнопку закрытия окна в macOS AppKit окно визуально скрывалось, однако процесс продолжал висеть в памяти (`NSWindowWillCloseNotification` не инициировал `terminate:`).
+### 3.4. Background Zombie Process on Window Close
+Clicking the AppKit window close button dismissed the window from screen, but the process remained active in the background.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 4. Applied Mitigations
 
-### 4.1. Конвертация платформы в Mac Catalyst
+### 4.1. Platform Header Retagging to Mac Catalyst
 ```bash
-# Переразметка платформы бинарника с iOS (2) на Mac Catalyst (6)
 vtool -set-build-version maccatalyst 14.0 14.0 -replace -output Payload/PCalc.app/PCalc Payload/PCalc.app/PCalc
 ```
 
 ### 4.2. In-Memory Keychain Shim (`core_keychain.c`)
-Интерпозиция функций Security Framework в потокобезопасный in-memory словарь `CFMutableDictionaryRef` полностью изолировала приложение от системного демона `securityd`:
+Interposed Security.framework functions using a thread-safe in-memory `CFMutableDictionaryRef`:
 
 ```c
 #include <CoreFoundation/CoreFoundation.h>
@@ -87,8 +82,8 @@ static OSStatus shim_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
 DYLD_INTERPOSE(shim_SecItemAdd, SecItemAdd);
 ```
 
-### 4.3. Оконная интеграция и завершение процесса (`mod_window_close.m`)
-Внедрение обработчика `NSWindowWillCloseNotification` для корректного выхода:
+### 4.3. Window Close Exit Handler (`mod_window_close.m`)
+Listens for `NSWindowWillCloseNotification` to cleanly terminate the process:
 
 ```objc
 #import <AppKit/AppKit.h>
@@ -109,23 +104,16 @@ static void init_window_close(void) {
 }
 ```
 
-### 4.4. Инъекция dylib и переподпись
-```bash
-# Внедрение загрузочной команды LC_LOAD_DYLIB
-python3 engine/insert_dylib.py Payload/PCalc.app/PCalc "@executable_path/libshim.dylib"
-
-# Рекурсивная ad-hoc переподпись
-codesign -f -s - Payload/PCalc.app/libshim.dylib
-codesign -f -s - --deep Payload/PCalc.app
-```
+### 4.4. Mach-O LC_LOAD_DYLIB Injection & Signing
+`engine/patch_app.py` inserts `@executable_path/libshim.dylib` into the binary load commands and deep-signs the bundle.
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / Fully Working**
-- **UI / UX**: Полная поддержка кликов мышью и трекпадом, адаптивный ресайзинг окна без искажения пропорций кнопок, переключение инженерного режима, сохранение состояния.
-- **Рецептурный файл**: `recipes/com.pcalc.mobile.ini`
+- **Status**: **Verified / Fully Working**
+- **UI / UX**: Trackpad and mouse clicks supported, adaptive free-form window resizing, scientific calculation modes, persistent session state.
+- **Recipe File**: `recipes/com.pcalc.mobile.ini`
 
 ```ini
 [metadata]

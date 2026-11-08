@@ -17,41 +17,41 @@ Authoritative case study and technical post-mortem for running BADLAND on Apple 
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-BADLAND — шедевр физического экшена с атмосферным аудиовизуальным рядом от финской студии Frogmind.
+BADLAND by Frogmind is a physics-based action game featuring a rich audiovisual design.
 
-Приложение стало главным тестовым полигоном для выявления глубоких системных дедлоков на стыке `dyld`, `CoreAudio` и обработчиков сигналов Unix (шаги 120–160 диалога, коммиты `bcdd7e5`, `00999c4`, `1123777`, `dd467df`). В исследовании участвовали субагенты **BADLAND Restorer** (`eeccad49-d4b6-4d39-b39d-9412ee21f799`) и **Legacy Games Diagnostic Runner** (`1ed9e21e-898e-4ab6-88a0-77e4e763711c`).
+This target served as the primary proving ground for uncovering deep system deadlocks at the intersection of `dyld`, `CoreAudio`, and Unix signal handlers.
 
 ---
 
-## 3. Что вызывало баг (Root Cause)
+## 3. Root Cause Analysis
 
-### 3.1. Дедлок статического C++ инициализатора в AudioSession
-Игра запускалась в терминале, однако окно не открывалось, иконка в Dock не появлялась, а процесс зависал на вызове Mach trap:
+### 3.1. Static C++ Initializer Deadlock in AudioSession
+When launched, the process produced no window or Dock icon, remaining hung on a Mach trap:
 ```text
 * frame #0: 0x0000000180000000 in mach_msg_trap ()
   frame #1: 0x0000000180000120 in mach_msg ()
   frame #2: 0x000000018005a200 in AudioSessionCreateSessionInServer ()
   frame #3: 0x0000000100021400 in BADLAND`__cxx_global_var_init ()
 ```
-**Причина**: До передачи управления в `main()` статический конструктор C++ вызывал `+[AVAudioSession sharedInstance]`. Вызов выполнял синхронный XPC Mach-запрос к системным аудиосерверам (`mediaserverd` и `CMIOProprietaryDefaultsSource`). Поскольку компоновщик dyld во время работы конструкторов удерживает глобальный рекурсивный лок образов (`dyld image lock`), ответный IPC-коллбэк не мог быть обработан, приводя к перманентному мертвому зависанию.
+**Cause**: Prior to entering `main()`, a static C++ constructor invoked `+[AVAudioSession sharedInstance]`. This triggered a synchronous XPC Mach message to system audio services (`mediaserverd` and `CMIOProprietaryDefaultsSource`). Because dyld holds a global recursive image lock while executing constructors, returning IPC callbacks could not be dispatched, resulting in an unrecoverable deadlock.
 
-### 3.2. Дедлок `fishhook` в `_dyld_register_func_for_add_image`
-Встроенные SDK Everyplay и GameCenter использовали библиотеку `fishhook` для динамического перехвата OpenGL-символов. `fishhook` вызывал `_dyld_register_func_for_add_image` внутри конструктора, что приводило к коллизии блокировок с `libdispatch`.
+### 3.2. `fishhook` Deadlock in `_dyld_register_func_for_add_image`
+Embedded Everyplay and GameCenter SDKs utilized `fishhook` to dynamically interpose OpenGL symbols. Calling `_dyld_register_func_for_add_image` within constructors caused recursive lock contention with `libdispatch`.
 
-### 3.3. Троттлинг FMOD Audio IOThread (Слайд-шоу 5 FPS)
-После обхода дедлока игра запускалась, но работала со скоростью 5 FPS с прерывистым заикающимся звуком. На macOS вторичные аудиопотоки (микшер FMOD) без связи с главным AppKit-потоком понижаются планировщиком macOS в приоритете (QoS Background Throttling).
+### 3.3. FMOD Audio IOThread Throttling (5 FPS Slideshow)
+After bypassing deadlocks, the game rendered at 5 FPS with severe audio stuttering. On macOS, secondary audio worker threads lacking an AppKit main-thread coupling are deprioritized by the Darwin kernel scheduler (QoS background throttling).
 
-### 3.4. Бесконечная рекурсия в `handle_memory_fault` (`PAGEZERO`)
-При первом разыменовании нулевого указателя (`info->si_addr < 0x4000`) глобальный обработчик памяти в раннем шиме вычислял `page = 0` и вызывал `mprotect(0, 0x4000, PROT_READ|PROT_WRITE)`. В Darwin/Mach нулевая страница (`PAGEZERO`) аппаратно защищена ядром и не подлежит модификации через `mprotect` (возвращает ошибку `EINVAL`). После возврата из обработчика процессор перезапускал сбойную инструкцию, мгновенно вызывая повторный `SIGSEGV` и уводя процесс в 100% загрузку CPU.
+### 3.4. Infinite Recursion on `PAGEZERO` in Fault Handler
+When dereferencing a null pointer (`info->si_addr < 0x4000`), the early memory handler calculated `page = 0` and called `mprotect(0, 0x4000, PROT_READ|PROT_WRITE)`. Under Darwin, `PAGEZERO` is hardware-protected by the kernel and cannot be modified (returns `EINVAL`). Returning from the signal handler re-executed the faulting instruction, causing infinite `SIGSEGV` recursion and 100% CPU lockup.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 4. Applied Mitigations
 
-### 4.1. Превентивный перехват `AVAudioSession` (`mod_audio_legacy.m`)
-Инициализация хуков с приоритетом `__attribute__((constructor(-50)))`, возвращающих мгновенные статические значения без обращения к XPC-демонам:
+### 4.1. Preemptive `AVAudioSession` Interception (`audio_session_fix.m`)
+Registered constructor hooks (`__attribute__((constructor(-50)))`) providing immediate static values without contacting XPC daemons:
 
 ```objc
 #import <Foundation/Foundation.h>
@@ -80,7 +80,7 @@ static void init_audio_early(void) {
 }
 ```
 
-### 4.2. Подавление динамического хукинга `fishhook` (`mod_dyld_fishhook.c`)
+### 4.2. Suppression of Dynamic `fishhook` Rebinding (`dyld_fishhook_suppress.c`)
 ```c
 #include <mach-o/dyld.h>
 
@@ -91,16 +91,16 @@ static void init_audio_early(void) {
 typedef void (*dyld_image_func)(const struct mach_header* mh, intptr_t vmaddr_slide);
 
 static void shim_dyld_register_func_for_add_image(dyld_image_func func) {
-    // No-op: предотвращение дедлока fishhook в dyld
+    // No-op: suppress fishhook deadlock during early dyld bootstrap
 }
 DYLD_INTERPOSE(shim_dyld_register_func_for_add_image, _dyld_register_func_for_add_image);
 ```
 
-### 4.3. Устранение циклического сбоя `PAGEZERO` в `mod_fault_handler.c`
+### 4.3. `PAGEZERO` Null Guard in `memory_fault_recovery.c`
 ```c
 static void handle_memory_fault(int sig, siginfo_t *info, void *ucontext) {
     uintptr_t addr = (uintptr_t)info->si_addr;
-    // Защита от зацикливания на нулевой странице ядра
+    // Guard against kernel PAGEZERO infinite loop
     if (addr < 0x4000) {
         signal(sig, SIG_DFL);
         return;
@@ -114,11 +114,11 @@ static void handle_memory_fault(int sig, siginfo_t *info, void *ucontext) {
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / 60 FPS Flawless**
-- **Метрики**: Идеальная физика полета клонов, чистый 44.1 кГц саундтрек FMOD без щелчков и рассинхронизации, отзывчивое управление кликами мыши.
-- **Рецептурный файл**: `recipes/com.frogmindgames.dodge.ini`
+- **Status**: **Verified / 60 FPS Flawless**
+- **Metrics**: Flawless physics simulation, clean 44.1 kHz FMOD audio stream without underruns, responsive mouse input.
+- **Recipe File**: `recipes/com.frogmindgames.dodge.ini`
 
 ```ini
 [metadata]

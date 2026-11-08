@@ -17,37 +17,37 @@ Authoritative case study and technical post-mortem for running EcoFlow on Apple 
 
 ---
 
-## 2. Контекст запуска и хронология
+## 2. Context & Chronology
 
-EcoFlow — современный клиент управления портативными зарядными станциями, солнечными генераторами и элементами умного дома по Bluetooth и Wi-Fi.
+EcoFlow is an energy management client for portable power stations, solar generators, and smart home appliances communicating over Bluetooth and Wi-Fi.
 
-Задача решалась на шагах 3330–3345 диалога (коммиты `bb754c8`, `dd467df`). В разработке участвовал субагент **UI & Layout Compatibility** (`44ff3260-0bd2-4746-a5dd-95638a131f20`), которому было поручено устранить верстку телефонного интерфейса и обеспечить четкий планшетный дэшборд.
-
----
-
-## 3. Что вызывало баг (Root Cause)
-
-### 3.1. Искажение лейаута из-за неверного `UIUserInterfaceIdiom`
-React Native определяет стили компонентов и плотность сетки карточек через обращение к `[UIDevice currentDevice].userInterfaceIdiom`. 
-- В среде Mac Catalyst без вмешательства данный метод возвращал `5` (`UIUserInterfaceIdiomMac`) либо `0` (`UIUserInterfaceIdiomPhone`).
-- Движок React Native не знал значения `5` и переключался в режим мобильного телефона, в результате чего виджеты мощности батареи сжимались в узкую вертикальную колонку, шрифты становились нечитаемыми, а flex-контейнеры выходили за пределы экрана.
-
-### 3.2. Ложные метрики `[UIScreen mainScreen].bounds`
-Метод `[UIScreen mainScreen].bounds` возвращал физическое разрешение дисплея Mac (1440x900 pt). Модуль `Dimensions.get('window')` в JavaScript считал, что экран имеет ширину 1440 pt при высоте 900 pt, вызывая чудовищные горизонтальные разрывы верстки.
+This case required resolving mobile phone layout degradation to enforce a tablet-optimized dashboard layout.
 
 ---
 
-## 4. Что мы применили (Applied Solution)
+## 3. Root Cause Analysis
 
-### 4.1. Принудительный планшетный идиом в `mod_window.m`
-Свиззлинг `[UIDevice userInterfaceIdiom]` для жесткого возврата значения `1` (`UIUserInterfaceIdiomPad`):
+### 3.1. Layout Degradation from Ambiguous `UIUserInterfaceIdiom`
+React Native determines component layouts and card grids by querying `[UIDevice currentDevice].userInterfaceIdiom`.
+- Under standard Mac Catalyst, this API returns `5` (`UIUserInterfaceIdiomMac`) or `0` (`UIUserInterfaceIdiomPhone`).
+- Unaware of value `5`, React Native fell back to compact phone mode, shrinking battery power widgets into a cramped column with clipped text and broken flex containers.
+
+### 3.2. Misaligned Screen Metrics (`[UIScreen mainScreen].bounds`)
+Calling `[UIScreen mainScreen].bounds` returned the physical display metrics of the Mac (e.g. 1440x900 pt). JavaScript's `Dimensions.get('window')` inferred a 1440 pt wide viewport, disrupting horizontal responsive layouts.
+
+---
+
+## 4. Applied Mitigations
+
+### 4.1. Enforcing Tablet Idiom (`mod_window.m`)
+Swizzled `[UIDevice userInterfaceIdiom]` to return `1` (`UIUserInterfaceIdiomPad`):
 
 ```objc
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
 static UIUserInterfaceIdiom hook_userInterfaceIdiom(id self, SEL _cmd) {
-    return UIUserInterfaceIdiomPad; // Возвращаем iPad (1)
+    return UIUserInterfaceIdiomPad; // Force iPad (1)
 }
 
 __attribute__((constructor))
@@ -59,8 +59,8 @@ static void init_device_idiom(void) {
 }
 ```
 
-### 4.2. Калибровка виртуального экрана `[UIScreen bounds]` под размеры окна
-Перехват экранных границ для привязки к реальному размеру контента окна (768x1024):
+### 4.2. Calibrating Virtual Screen Bounds to Window Frame
+Bound `[UIScreen bounds]` queries to the window's content rect (`768x1024`):
 
 ```objc
 static CGRect hook_screenBounds(id self, SEL _cmd) {
@@ -75,16 +75,16 @@ static CGRect hook_screenBounds(id self, SEL _cmd) {
 }
 ```
 
-### 4.3. Фиксация окна 3:4 без ресайзинга (`resizable = false`)
-В `com.ef.EcoFlow.ini` зафиксированы размеры `width = 768`, `height = 1024`, что предотвращает деформацию карточек телеметрии.
+### 4.3. Fixed 3:4 Window Dimensions (`resizable = false`)
+Set `width = 768`, `height = 1024` in `recipes/com.ef.EcoFlow.ini` to prevent telemetry card distortion.
 
 ---
 
-## 5. Текущий статус и верификация
+## 5. Status & Verification
 
-- **Статус**: **Verified / Tablet Quality**
-- **UI / UX**: Просторный планшетный дэшборд, анимация графиков энергопотребления, стабильная авторизация через in-memory keychain, отсутствие горизонтального скролла.
-- **Рецептурный файл**: `recipes/com.ef.EcoFlow.ini`
+- **Status**: **Verified / Tablet Quality**
+- **UI / UX**: Clean iPad dashboard layout, animated power consumption graphs, stable session storage via in-memory keychain, zero horizontal clipping.
+- **Recipe File**: `recipes/com.ef.EcoFlow.ini`
 
 ```ini
 [metadata]
