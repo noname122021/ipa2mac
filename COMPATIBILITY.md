@@ -8,7 +8,7 @@ Authoritative compatibility register for non-encrypted arm64 iOS applications ex
 
 | Application | Bundle ID | Version | Engine / Tech Stack | Graphics | Audio Stack | Key Shims & Quirks | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Zenless Zone Zero** | `com.HoYoverse.Nap` | 3.3.1 | Unity / Metal / Wwise | Metal | Wwise / CriWare | `audio_session_fix` prevents synchronous XPC deadlock, `iPad14,3` hardware spoof, `memory_fault_recovery` | **Verified / In-Game** |
+| **Zenless Zone Zero** | `com.HoYoverse.Nap` | 3.3.1 | Unity / Metal / Wwise | Metal | Wwise / CriWare | In-memory session Keychain, Metal PSO compilation (~20s cold start), 16:9 aspect fit | **Verified / In-Game** |
 | **CarX Street** | `com.carxtech.sr` | 1.24.0 | Unity 6000 (IL2CPP) | Metal | FMOD / CoreAudio | 64GB `statfs_spoof`, `odr_bypass`, `iPad13,8` spoof, Addressables bundle copy | **Verified / 60 FPS** |
 | **BADLAND** | `com.frogmindgames.dodge` | 3.4.3 | Frogmind C++ / Cocos2d-x | GLES / Metal | FMOD / CoreAudio | Fishhook deadlock suppression, unthrottled CoreAudio IOThread, in-memory Keychain | **Verified / 60 FPS** |
 | **LIMBO** | `com.playdeadgames.limbo.ios` | 1.1.28 | Playdead C++ Engine | Custom Metal | FMOD / CoreAudio | `sysctlbyname("hw.machine")` spoofed to `iPad8,1`, `GKLocalPlayer` async auto-auth | **Verified / 60 FPS** |
@@ -30,7 +30,7 @@ Authoritative compatibility register for non-encrypted arm64 iOS applications ex
 
 | Bundle ID | Recipe File | Window (WxH) | Aspect Ratio | Resizable | Orientation | Device Model | Key Feature Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `com.HoYoverse.Nap` | [recipes/com.HoYoverse.Nap.ini](recipes/com.HoYoverse.Nap.ini) | 1280x720 | 16:9 | Yes | Landscape | `iPad14,3` | `audio_session_fix`, `memory_fault_recovery` |
+| `com.HoYoverse.Nap` | [recipes/com.HoYoverse.Nap.ini](recipes/com.HoYoverse.Nap.ini) | 1280x720 | 16:9 | Yes | Landscape | Default | `core_keychain`, `mod_input_context`, `mod_window`, `mod_window_close` |
 | `com.carxtech.sr` | [recipes/com.carxtech.sr.ini](recipes/com.carxtech.sr.ini) | 1280x720 | 16:9 | Yes | Landscape | `iPad13,8` | `statfs_spoof`, `odr_bypass`, `bundle_copy` |
 | `com.frogmindgames.dodge` | [recipes/com.frogmindgames.dodge.ini](recipes/com.frogmindgames.dodge.ini) | 960x540 | 16:9 | Yes | Landscape | `iPad8,1` | `dyld_fishhook_suppress`, `audio_unthrottle` |
 | `com.playdeadgames.limbo.ios` | [recipes/com.playdeadgames.limbo.ios.ini](recipes/com.playdeadgames.limbo.ios.ini) | 1152x648 | 16:9 | Yes | Landscape | `iPad8,1` | `game_center_auto_auth`, `sysctl_spoof` |
