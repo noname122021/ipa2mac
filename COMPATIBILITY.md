@@ -22,6 +22,7 @@ Authoritative compatibility register for non-encrypted arm64 iOS applications ex
 | **GoodReader Pro** | `com.goodiware.grpro` | 5.6.1119 | Native ObjC / C++ | UIKit / PDFKit | CoreAudio | `CFFIXED_USER_HOME` redirection to `~/Documents`, `UIUserInterfaceIdiomPad` | **Verified / Working** |
 | **PCalc** | `com.pcalc.mobile` | 3.7.5 | Native CocoaTouch / C | UIKit / CoreGraphics | System Audio | In-memory Keychain, tablet calculation tape view, window close exit handler | **Verified / Working** |
 | **JAVser** | `com.guro.javser` | 1.0.0 | Compose Multiplatform (Kotlin) | Skiko Metal | AVFoundation | `mod_bg_classes` stubs, selective BackgroundTasks framework redirect | **Verified / Working** |
+| **Real Racing 3** | `com.ea.realracing3.inc` | 14.0.1 | Firemonkeys Mint 3 | Metal | CoreAudio / FMOD | `hardware_model = iPad6,7` matches `res/eds/` profile, `user_interface_idiom = pad`, on-screen button controls | **Verified / 60 FPS** |
 
 ---
 
@@ -43,6 +44,7 @@ Authoritative compatibility register for non-encrypted arm64 iOS applications ex
 | `com.goodiware.grpro` | [recipes/com.goodiware.grpro.ini](recipes/com.goodiware.grpro.ini) | 800x1000 | Free | Yes | Free | Default | `user_interface_idiom = pad`, `cffixed_user_home` |
 | `com.pcalc.mobile` | [recipes/com.pcalc.mobile.ini](recipes/com.pcalc.mobile.ini) | 420x680 | Free | Yes | Portrait | Default | `user_interface_idiom = pad`, `window_close_exit` |
 | `com.guro.javser` | [recipes/com.guro.javser.ini](recipes/com.guro.javser.ini) | 900x700 | Free | Yes | Free | Default | `background_tasks_redirect`, `reexport_bg` |
+| `com.ea.realracing3.inc` | [recipes/com.ea.realracing3.inc.ini](recipes/com.ea.realracing3.inc.ini) | 1280x720 | 16:9 | Yes | Landscape | `iPad6,7` | `hardware_model = iPad6,7`, `user_interface_idiom = pad` |
 
 ---
 
@@ -57,7 +59,6 @@ Authoritative compatibility register for non-encrypted arm64 iOS applications ex
 | **Angry Birds Classic** | `com.rovio.AngryBirdsClassic` | Rovio Fusion / C++ | OpenGL ES 2.0 | iOS 9.0 - 11.0 | Fixed letterbox, OpenAL / AVAudioPlayer, Game Center mock |
 | **Tiny Wings** | `com.andreasilliger.tinywings` | Andreas Illiger C++ / Cocos2d-x | OpenGL ES 2.0 | iOS 8.0 - 12.0 | 60 FPS physics loop, OpenAL audio engine, Retina scaling |
 | **Rayman Jungle Run** | `com.ubisoft.raymanjunglerun` | UbiArt Framework (C++) | OpenGL ES 2.0 | iOS 8.0 - 11.0 | UbiArt sprite batching, Wwise audio session, Game Center mock |
-| **Real Racing 3** | `com.ea.realracing3.inc` | Mint 3 (Firemonkeys C++) | Metal / GLES 3.0 | iOS 9.0 - 14.0 | Dynamic Metal shader cache, OpenAL/FMOD audio, asset downloads |
 | **Grand Theft Auto III** | `com.rockstargames.gta3` | War Drum / RenderWare (C++) | GLES 2.0 / 3.0 | iOS 8.0 - 12.0 | Virtual controls to mouse/keyboard bridge, OpenAL 3D sound |
 | **GTA: San Andreas** | `com.rockstargames.gtasa` | War Drum / RenderWare (C++) | Metal / GLES 3.0 | iOS 9.0 - 14.0 | 64-bit Metal shaders, touch steering translation, CoreAudio |
 | **Geometry Dash** | `com.robtop.geometryjump` | Cocos2d-x 2.x/3.x (C++) | OpenGL ES 2.0 | iOS 8.0 - 14.0 | FMOD sound low-latency sync, CADisplayLink high-rate timer |

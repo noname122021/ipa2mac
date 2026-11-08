@@ -26,6 +26,7 @@ This directory documents real-world adaptation of non-encrypted (`cryptid = 0`) 
 | **GTA Vice City** | `com.rockstargames.gta3vc` | 1.5.1 | War Drum / RenderWare | Legacy GLES / OpenAL 3D | Legacy AudioQueue, save game permissions in sandbox | Catalyst retag, in-memory keychain, `CFFIXED_USER_HOME` save sync | **Verified** | [gta_vice_city.md](gta_vice_city.md) |
 | **Plants vs. Zombies HD**| `com.popcap.PvZiPad` | 1.9.12 | PopCap SexyAppFramework | Legacy GLES 2.0 / OpenAL | Arbitrary window resize ruins 4:3 1024x768 lawn grid collision | Fixed 4:3 1024x768 canvas, aspect-fit scaling, user save redirect | **Verified** | [plants_vs_zombies_hd.md](plants_vs_zombies_hd.md) |
 | **Zenless Zone Zero** | `com.HoYoverse.Nap` | 3.3.1 | Unity / Custom Metal | Metal / Wwise CriWare | AVAudioSession XPC deadlock, memory fault exceptions | `audio_session_fix`, `iPad14,3` model spoof, `memory_fault_recovery` | **Verified** | [recipes/com.HoYoverse.Nap.ini](../../recipes/com.HoYoverse.Nap.ini) |
+| **Real Racing 3** | `com.ea.realracing3.inc` | 14.0.1 | Firemonkeys Mint 3 | Metal / CoreAudio | Hardware model crash in `res/eds/`, tilt tutorial stall | `hardware_model = iPad6,7`, `user_interface_idiom = pad`, on-screen button control | **Verified** | [real_racing_3.md](real_racing_3.md) |
 
 ---
 
