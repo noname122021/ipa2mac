@@ -257,6 +257,7 @@ def patch_app(target, output_dir=None):
 
         subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", app_bundle], capture_output=True)
         logging.info("[%5.1fs] [+] Successfully patched %s", time.time() - start_time, app_bundle)
+        logging.info("[*] Data container: ~/Library/Containers/%s/Data", bundle_id)
         return app_bundle
     except Exception as e:
         logging.error("[%5.1fs] [-] Conversion failed: %s", time.time() - start_time, e)

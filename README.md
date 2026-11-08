@@ -142,6 +142,29 @@ The patched application is finalized in-place and ready to launch:
 open "/path/to/Game.app"
 ```
 
+### Offline Game Assets & Cache Setup (Large Games)
+
+Certain high-fidelity titles (such as Real Racing 3, Zenless Zone Zero, CarX Street) require multi-gigabyte asset caches (`Caches/` or `Documents/`) that cannot be streamed from live servers. Under macOS, converted iOS applications store their local filesystem state inside standard sandbox containers:
+
+```text
+~/Library/Containers/<bundle_id>/Data/Library/Caches/
+~/Library/Containers/<bundle_id>/Data/Documents/
+```
+
+To provide offline caches (e.g. 5.7 GB `Caches_ipastore.zip` for Real Racing 3):
+1. **Direct Extract**:
+   ```bash
+   mkdir -p ~/Library/Containers/<bundle_id>/Data/Library
+   unzip -q Caches.zip -d ~/Library/Containers/<bundle_id>/Data/Library/
+   ```
+2. **Symlink from External Storage (Saves internal SSD space)**:
+   ```bash
+   mkdir -p ~/Library/Containers/<bundle_id>/Data/Library
+   rm -rf ~/Library/Containers/<bundle_id>/Data/Library/Caches
+   ln -s "/Volumes/ExternalDrive/path/to/Caches" ~/Library/Containers/<bundle_id>/Data/Library/Caches
+   ```
+3. **Finder (GUI)**: Press `Cmd + Shift + G`, paste `~/Library/Containers/<bundle_id>/Data/Library/`, and drag your `Caches` folder directly into it.
+
 ---
 
 ## Tested Applications & Compatibility
