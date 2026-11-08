@@ -14,17 +14,12 @@ import tempfile
 import zipfile
 
 def setup_logging(log_path):
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    root.handlers.clear()
-    fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
-    root.addHandler(fh)
+    fmt = "%(asctime)s [%(levelname)s] %(message)s"
+    logging.basicConfig(level=logging.DEBUG, filename=log_path, filemode="a", format=fmt, datefmt="%Y-%m-%d %H:%M:%S")
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(logging.Formatter("%(message)s"))
-    root.addHandler(ch)
+    logging.getLogger().addHandler(ch)
 
 def insert_dylib(bin_path, dylib_path):
     with open(bin_path, "rb") as f:
@@ -60,13 +55,11 @@ def apply_binary_patch(bin_path, patch_spec):
     if not patch_spec or ":" not in patch_spec:
         return
     off_str, exp_hex, rep_hex = patch_spec.split(":", 2)
-    offset = int(off_str, 0)
-    rep_bytes = bytes.fromhex(rep_hex)
+    offset, rep_bytes = int(off_str, 0), bytes.fromhex(rep_hex)
     with open(bin_path, "r+b") as f:
         f.seek(offset)
         if exp_hex != "*" and f.read(len(rep_bytes)) != bytes.fromhex(exp_hex):
-            logging.warning("Binary patch mismatch at %s", off_str)
-            return
+            return logging.warning("Binary patch mismatch at %s", off_str)
         f.seek(offset)
         f.write(rep_bytes)
     logging.info("    [+] Applied binary patch at %s", off_str)
@@ -75,135 +68,113 @@ def extract_ipa(ipa_path, dest_dir):
     with zipfile.ZipFile(ipa_path, "r") as zf:
         for info in zf.infolist():
             extracted = zf.extract(info, dest_dir)
-            mode = info.external_attr >> 16
-            if mode:
-                os.chmod(extracted, mode)
+            if info.external_attr >> 16:
+                os.chmod(extracted, info.external_attr >> 16)
     apps = glob.glob(os.path.join(dest_dir, "Payload", "*.app"))
     if not apps:
         raise FileNotFoundError("No .app bundle found in IPA Payload")
     return apps[0]
 
 def resolve_recipe(recipes_dir, bundle_id):
-    override = os.environ.get("RECIPE_OVERRIDE")
-    recipe_file = override if override else os.path.join(recipes_dir, f"{bundle_id}.ini")
-    if not os.path.isfile(recipe_file):
+    path = os.environ.get("RECIPE_OVERRIDE") or os.path.join(recipes_dir, f"{bundle_id}.ini")
+    if not os.path.isfile(path):
         return None
-    with open(recipe_file, "r", encoding="utf-8") as f:
-        content = f.read()
-    m = re.search(r"^(target_ini|path)\s*=\s*([^\r\n;#]+)", content, re.MULTILINE)
-    if not m:
-        return recipe_file
-    target = os.path.join(recipes_dir, m.group(2).strip().strip('"'))
-    return target if os.path.isfile(target) else recipe_file
+    with open(path, "r", encoding="utf-8") as f:
+        m = re.search(r"^(?:target_ini|path)\s*=\s*([^\r\n;#]+)", f.read(), re.MULTILINE)
+    if m:
+        target = os.path.join(recipes_dir, m.group(1).strip().strip('"'))
+        return target if os.path.isfile(target) else path
+    return path
 
 def load_recipe(recipe_path):
     cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
     if recipe_path and os.path.isfile(recipe_path):
         cp.read(recipe_path, encoding="utf-8")
-    return cp
+    return {k.lower(): v.strip().strip('"') for s in cp.sections() for k, v in cp.items(s)}
 
-def recipe_val(cp, key, default=""):
-    for sec in cp.sections():
-        if cp.has_option(sec, key):
-            return cp.get(sec, key).strip().strip('"')
-    return default
-
-def recipe_flag(cp, key):
-    return recipe_val(cp, key).lower() in ("true", "1", "yes")
+def to_dict(cfg):
+    if hasattr(cfg, "sections"):
+        return {k.lower(): v.strip().strip('"') for s in cfg.sections() for k, v in cfg.items(s)}
+    return cfg or {}
 
 def find_module(name, modules_dir):
-    base = name[4:] if name.startswith("mod_") else name
-    cands = [name, f"{name}.m", f"{name}.c", f"{base}.m", f"{base}.c", f"mod_{base}.m", f"mod_{base}.c"]
-    for c in cands:
-        if os.path.isfile(c):
-            return os.path.abspath(c)
-        cand = os.path.join(modules_dir, c)
+    base = name.removeprefix("mod_")
+    for cand in (name, f"{name}.m", f"{name}.c", f"{base}.m", f"{base}.c", f"mod_{base}.m", f"mod_{base}.c"):
         if os.path.isfile(cand):
-            return cand
+            return os.path.abspath(cand)
+        cand_path = os.path.join(modules_dir, cand)
+        if os.path.isfile(cand_path):
+            return cand_path
     return None
 
-def collect_modules(cp, modules_dir):
+def collect_modules(cfg, modules_dir):
+    cfg = to_dict(cfg)
     defaults = ["core_keychain.c", "mod_window.m", "mod_window_close.m", "mod_input_context.m"]
     mods = [os.path.join(modules_dir, m) for m in defaults if os.path.isfile(os.path.join(modules_dir, m))]
-    def add(target):
-        p = find_module(target, modules_dir)
+    targets = [k for k, v in cfg.items() if v.lower() in ("true", "1", "yes")]
+    targets += cfg.get("modules", "").replace(",", " ").split()
+    if cfg.get("hardware_model"):
+        targets.append("device_spoof")
+    if "unreal" in cfg.get("engine", "") or cfg.get("ascii_path_redirect"):
+        targets.append("fake_mpmovieplayer")
+    if cfg.get("background_tasks_redirect", "").lower() in ("true", "1", "yes"):
+        targets.append("background_tasks_redirect")
+    for t in targets:
+        p = find_module(t, modules_dir)
         if p and p not in mods:
             mods.append(p)
-    if cp.has_section("shims"):
-        for opt, val in cp.items("shims"):
-            if val.strip().strip('"').lower() in ("true", "1", "yes"):
-                add(opt)
-    for m in [x.strip() for x in recipe_val(cp, "modules").replace(",", " ").split() if x.strip()]:
-        add(m)
-    if recipe_val(cp, "hardware_model"):
-        add("device_spoof")
-    if "unreal" in recipe_val(cp, "engine") or recipe_val(cp, "ascii_path_redirect"):
-        add("fake_mpmovieplayer")
-    if recipe_flag(cp, "background_tasks_redirect"):
-        add("background_tasks_redirect")
     return mods
 
-def build_compile_flags(cp):
-    flags = shlex.split(recipe_val(cp, "compile_flags"))
-    w, h = recipe_val(cp, "width"), recipe_val(cp, "height")
-    if w:
-        flags.append(f"-DTARGET_WIDTH={w}")
-    if h:
-        flags.append(f"-DTARGET_HEIGHT={h}")
-    aspect = recipe_val(cp, "aspect_ratio")
-    if aspect and aspect != "free" and ":" in aspect:
+def build_compile_flags(cfg):
+    cfg = to_dict(cfg)
+    flags = shlex.split(cfg.get("compile_flags", ""))
+    flags += [f"-DTARGET_WIDTH={cfg['width']}"] if "width" in cfg else []
+    flags += [f"-DTARGET_HEIGHT={cfg['height']}"] if "height" in cfg else []
+    aspect = cfg.get("aspect_ratio", "")
+    if ":" in aspect and aspect != "free":
         aw, ah = aspect.split(":", 1)
-        flags.extend([f"-DASPECT_W={aw}", f"-DASPECT_H={ah}"])
-    if recipe_val(cp, "resizable") == "false":
+        flags += [f"-DASPECT_W={aw}", f"-DASPECT_H={ah}"]
+    if cfg.get("resizable") == "false":
         flags.append("-DRESIZABLE=0")
-    if recipe_val(cp, "scale_mode") == "aspect_fit" or recipe_flag(cp, "uiscreen_bounds_fixed"):
+    if cfg.get("scale_mode") == "aspect_fit" or cfg.get("uiscreen_bounds_fixed") in ("true", "1", "yes"):
         flags.append("-DHOOK_UISCREEN=1")
-    if recipe_val(cp, "user_interface_idiom") in ("pad", "1"):
+    if cfg.get("user_interface_idiom") in ("pad", "1"):
         flags.append("-DIDIOM_PAD=1")
-    if recipe_val(cp, "hardware_model"):
-        flags.append(f'-DDEVICE_MODEL="{recipe_val(cp, "hardware_model")}"')
-    if recipe_val(cp, "ascii_path_redirect"):
-        flags.append(f'-DASCII_PATH_TARGET="{recipe_val(cp, "ascii_path_redirect")}"')
+    if "hardware_model" in cfg:
+        flags.append(f'-DDEVICE_MODEL="{cfg["hardware_model"]}"')
+    if "ascii_path_redirect" in cfg:
+        flags.append(f'-DASCII_PATH_TARGET="{cfg["ascii_path_redirect"]}"')
     return flags
 
-def build_link_flags(cp):
-    fws = ["Foundation", "Security", "AppKit", "CoreGraphics", "AudioToolbox", "AVFoundation"]
-    flags = [x for fw in fws for x in ("-framework", fw)] + shlex.split(recipe_val(cp, "link_flags"))
-    if recipe_flag(cp, "background_tasks_redirect"):
+def build_link_flags(cfg):
+    cfg = to_dict(cfg)
+    fws = ("Foundation", "Security", "AppKit", "CoreGraphics", "AudioToolbox", "AVFoundation")
+    flags = [x for fw in fws for x in ("-framework", fw)] + shlex.split(cfg.get("link_flags", ""))
+    if cfg.get("background_tasks_redirect", "").lower() in ("true", "1", "yes"):
         flags.append("-Wl,-reexport_framework,BackgroundTasks")
     return flags
 
 def patch_mach_o(bin_path, redirect_bg=False):
     os.chmod(bin_path, 0o755)
     res = subprocess.run(["lipo", "-archs", bin_path], capture_output=True, text=True)
-    archs = res.stdout.strip()
-    if "arm64" in archs and " " in archs:
-        thin = f"{bin_path}.thin"
-        subprocess.run(["lipo", "-thin", "arm64", bin_path, "-output", thin], check=True)
-        os.replace(thin, bin_path)
+    if "arm64" in res.stdout and " " in res.stdout.strip():
+        subprocess.run(["lipo", "-thin", "arm64", bin_path, "-output", f"{bin_path}.thin"], check=True)
+        os.replace(f"{bin_path}.thin", bin_path)
     subprocess.run(["vtool", "-set-build-version", "maccatalyst", "14.0", "14.0", "-replace", "-output", bin_path, bin_path], capture_output=True)
     if redirect_bg:
         otool = subprocess.run(["otool", "-L", bin_path], capture_output=True, text=True)
         for line in otool.stdout.splitlines():
             if "BackgroundTasks.framework" in line:
-                bg = line.strip().split()[0]
-                subprocess.run(["install_name_tool", "-change", bg, "@executable_path/libshim.dylib", bin_path], capture_output=True)
+                subprocess.run(["install_name_tool", "-change", line.strip().split()[0], "@executable_path/libshim.dylib", bin_path], capture_output=True)
 
 def patch_all_binaries(app_bundle, redirect_bg=False):
-    fw_dir = os.path.join(app_bundle, "Frameworks")
-    if os.path.isdir(fw_dir):
-        for fw in glob.glob(os.path.join(fw_dir, "*.framework")):
-            name = os.path.splitext(os.path.basename(fw))[0]
-            if os.path.isfile(os.path.join(fw, name)):
-                patch_mach_o(os.path.join(fw, name), redirect_bg)
-        for dylib in glob.glob(os.path.join(fw_dir, "*.dylib")):
-            patch_mach_o(dylib, redirect_bg)
-    plugins_dir = os.path.join(app_bundle, "PlugIns")
-    if os.path.isdir(plugins_dir):
-        for appex in glob.glob(os.path.join(plugins_dir, "*.appex")):
-            name = os.path.splitext(os.path.basename(appex))[0]
-            if os.path.isfile(os.path.join(appex, name)):
-                patch_mach_o(os.path.join(appex, name), redirect_bg)
+    for root, dirs, files in os.walk(app_bundle):
+        for d in [d for d in dirs if d.endswith((".framework", ".appex"))]:
+            target = os.path.join(root, d, os.path.splitext(d)[0])
+            if os.path.isfile(target):
+                patch_mach_o(target, redirect_bg)
+        for f in [f for f in files if f.endswith(".dylib")]:
+            patch_mach_o(os.path.join(root, f), redirect_bg)
 
 def patch_plist(plist_path):
     if not os.path.isfile(plist_path):
@@ -219,50 +190,44 @@ def patch_plist(plist_path):
 
 def codesign_bundle(app_bundle):
     logging.info("[*] Codesigning binaries and bundle...")
-    items = []
     for root, dirs, files in os.walk(app_bundle, topdown=False):
-        items.extend([os.path.join(root, d) for d in dirs if d.endswith(".framework") or d.endswith(".appex")])
-        items.extend([os.path.join(root, f) for f in files if f.endswith(".dylib")])
-    for it in items:
-        subprocess.run(["codesign", "-f", "-s", "-", it], capture_output=True)
+        for it in [os.path.join(root, d) for d in dirs if d.endswith((".framework", ".appex"))] + \
+                  [os.path.join(root, f) for f in files if f.endswith(".dylib")]:
+            subprocess.run(["codesign", "-f", "-s", "-", it], capture_output=True)
     subprocess.run(["codesign", "-f", "-s", "-", "--deep", app_bundle], check=True)
 
 def patch_app(target, output_dir=None):
     temp_dir = tempfile.mkdtemp(prefix="ipa_patch_") if target.endswith(".ipa") else None
     try:
         app_bundle = extract_ipa(target, temp_dir) if temp_dir else target
-        if not os.path.isdir(app_bundle):
-            raise ValueError(f"Target is not a valid .app bundle: {app_bundle}")
         logging.info("[*] Target app bundle: %s", app_bundle)
         plist_path = os.path.join(app_bundle, "Info.plist")
         with open(plist_path, "rb") as f:
             plist = plistlib.load(f) if os.path.isfile(plist_path) else {}
-        bundle_id = plist.get("CFBundleIdentifier", "")
-        exe_name = plist.get("CFBundleExecutable") or os.path.splitext(os.path.basename(app_bundle))[0]
-        main_bin = os.path.join(app_bundle, exe_name)
+        exe = plist.get("CFBundleExecutable") or os.path.splitext(os.path.basename(app_bundle))[0]
+        main_bin = os.path.join(app_bundle, exe)
         os.chmod(main_bin, 0o755)
-        res = subprocess.run(["lipo", "-archs", main_bin], capture_output=True, text=True)
-        if "arm64" not in res.stdout:
-            raise ValueError(f"ipa2mac requires 64-bit arm64 ({res.stdout.strip()})")
+        archs = subprocess.run(["lipo", "-archs", main_bin], capture_output=True, text=True).stdout
+        if "arm64" not in archs:
+            raise ValueError(f"ipa2mac requires 64-bit arm64 ({archs.strip()})")
 
-        recipes_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recipes")
-        modules_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules")
-        recipe_path = resolve_recipe(recipes_dir, bundle_id)
-        cp = load_recipe(recipe_path)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        recipe_path = resolve_recipe(os.path.join(root, "recipes"), plist.get("CFBundleIdentifier", ""))
+        cfg = load_recipe(recipe_path)
         if recipe_path:
             shutil.copyfile(recipe_path, os.path.join(app_bundle, "recipe.ini"))
 
-        redirect_bg = recipe_flag(cp, "background_tasks_redirect")
+        redirect_bg = cfg.get("background_tasks_redirect", "").lower() in ("true", "1", "yes")
         patch_mach_o(main_bin, redirect_bg)
-        apply_binary_patch(main_bin, recipe_val(cp, "binary_patch"))
+        apply_binary_patch(main_bin, cfg.get("binary_patch", ""))
         patch_all_binaries(app_bundle, redirect_bg)
 
-        mods = collect_modules(cp, modules_dir)
+        mods = collect_modules(cfg, os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules"))
         if os.environ.get("DUMP_MODULES") == "1":
             print("\n".join(os.path.basename(m) for m in mods))
             sys.exit(0)
 
-        cflags, lflags = build_compile_flags(cp), build_link_flags(cp)
+        cflags, lflags = build_compile_flags(cfg), build_link_flags(cfg)
         logging.info("[*] JIT Compiling libshim.dylib for %s...", os.path.basename(app_bundle))
         target_shim = os.path.join(app_bundle, "libshim.dylib")
         cmd = ["clang", "-dynamiclib", "-arch", "arm64", "-install_name", "@executable_path/libshim.dylib"] + lflags + cflags + mods + ["-o", target_shim]
@@ -271,11 +236,12 @@ def patch_app(target, output_dir=None):
         insert_dylib(main_bin, "@executable_path/libshim.dylib")
 
         subprocess.run(["xattr", "-cr", app_bundle], capture_output=True)
-        bc = recipe_val(cp, "bundle_copy")
-        if bc and ":" in bc:
+        bc = cfg.get("bundle_copy", "")
+        if ":" in bc:
             s, d = bc.split(":", 1)
-            if os.path.isfile(os.path.join(app_bundle, s)) and not os.path.exists(os.path.join(app_bundle, d)):
-                shutil.copyfile(os.path.join(app_bundle, s), os.path.join(app_bundle, d))
+            src, dst = os.path.join(app_bundle, s), os.path.join(app_bundle, d)
+            if os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copyfile(src, dst)
 
         patch_plist(plist_path)
         codesign_bundle(app_bundle)
@@ -295,26 +261,15 @@ def patch_app(target, output_dir=None):
         if temp_dir and os.path.isdir(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-def clean_input_path(raw):
-    p = raw.strip()
-    if p.startswith("file://"):
-        p = p[7:]
-    args = shlex.split(p) if ("'" in p or '"' in p or "\\" in p) else [p]
-    return args[0] if args else p
-
 def run_repl():
-    print("=================================================")
-    print("           ipa2mac — iOS to Mac Converter         ")
-    print("=================================================")
+    print("=================================================\n           ipa2mac — iOS to Mac Converter         \n=================================================")
     while True:
-        print("\nDrag and drop your non-encrypted 64-bit .ipa file here:")
-        print("(or paste the file path and press Enter)")
         try:
-            line = input("> ")
+            line = input("\nDrag and drop your non-encrypted 64-bit .ipa file here:\n(or paste the file path and press Enter)\n> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nExiting.")
             break
-        target = clean_input_path(line)
+        target = (shlex.split(line.removeprefix("file://")) or [""])[0] if line else ""
         if not target:
             continue
         if not os.path.exists(target):
@@ -328,20 +283,17 @@ def run_repl():
             print(f"[-] Conversion failed for {target}: {e}\n[-] Check ipa2mac.log for details.")
 
 def main():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    setup_logging(os.path.join(repo_root, "ipa2mac.log"))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    setup_logging(os.path.join(root, "ipa2mac.log"))
     if len(sys.argv) == 1:
         run_repl()
         return 0
-    target = sys.argv[1].removeprefix("file://")
-    out_dir = sys.argv[2] if len(sys.argv) > 2 else None
     try:
-        patch_app(target, out_dir)
+        patch_app(sys.argv[1].removeprefix("file://"), sys.argv[2] if len(sys.argv) > 2 else None)
         return 0
     except Exception as e:
         logging.debug("Batch conversion error", exc_info=True)
-        print(f"[-] Conversion failed: {e}", file=sys.stderr)
-        print("[-] Check ipa2mac.log for full details.", file=sys.stderr)
+        print(f"[-] Conversion failed: {e}\n[-] Check ipa2mac.log for full details.", file=sys.stderr)
         return 1
 
 if __name__ == "__main__":
