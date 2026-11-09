@@ -160,11 +160,14 @@ def patch_mach_o(bin_path, redirect_bg=False):
         subprocess.run(["lipo", "-thin", "arm64", bin_path, "-output", f"{bin_path}.thin"], check=True)
         os.replace(f"{bin_path}.thin", bin_path)
     subprocess.run(["vtool", "-set-build-version", "maccatalyst", "14.0", "14.0", "-replace", "-output", bin_path, bin_path], capture_output=True)
-    if redirect_bg:
-        otool = subprocess.run(["otool", "-L", bin_path], capture_output=True, text=True)
-        for line in otool.stdout.splitlines():
-            if "BackgroundTasks.framework" in line:
-                subprocess.run(["install_name_tool", "-change", line.strip().split()[0], "@executable_path/libshim.dylib", bin_path], capture_output=True)
+    otool = subprocess.run(["otool", "-L", bin_path], capture_output=True, text=True)
+    for line in otool.stdout.splitlines():
+        dep = line.strip().split()[0] if line.strip() else ""
+        if redirect_bg and "BackgroundTasks.framework" in dep:
+            subprocess.run(["install_name_tool", "-change", dep, "@executable_path/libshim.dylib", bin_path], capture_output=True)
+        elif "libswiftUIKit.dylib" in dep:
+            sys_uikit = "/System/iOSSupport/System/Library/Frameworks/UIKit.framework/UIKit"
+            subprocess.run(["install_name_tool", "-change", dep, sys_uikit, bin_path], capture_output=True)
 
 def patch_all_binaries(app_bundle, redirect_bg=False):
     for root, dirs, files in os.walk(app_bundle):
@@ -257,7 +260,8 @@ def patch_app(target, output_dir=None):
 
         subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", app_bundle], capture_output=True)
         logging.info("[%5.1fs] [+] Successfully patched %s", time.time() - start_time, app_bundle)
-        logging.info("[*] Data container: ~/Library/Containers/%s/Data", bundle_id)
+        bid = plist.get("CFBundleIdentifier", "")
+        logging.info("[*] Data container: ~/Library/Containers/%s/Data", bid)
         return app_bundle
     except Exception as e:
         logging.error("[%5.1fs] [-] Conversion failed: %s", time.time() - start_time, e)

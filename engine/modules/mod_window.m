@@ -1,12 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 
-#ifndef TARGET_WIDTH
-#define TARGET_WIDTH 900.0
-#endif
-#ifndef TARGET_HEIGHT
-#define TARGET_HEIGHT 700.0
-#endif
 #ifndef RESIZABLE
 #define RESIZABLE 1
 #endif
@@ -23,21 +17,22 @@ static NSSize calculate_window_size(CGFloat targetW, CGFloat targetH, NSScreen *
 
 static void configure_window_style(NSWindow *w, NSSize sz, BOOL resizable) {
     NSWindowStyleMask mask = [w styleMask] | NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
+    [w setMinSize:NSMakeSize(0, 0)];
+    [w setContentMinSize:NSMakeSize(0, 0)];
     if (resizable) {
         [w setStyleMask:mask | NSWindowStyleMaskResizable];
-        [w setMinSize:NSMakeSize(200, 200)];
         [w setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
 #if defined(ASPECT_W) && defined(ASPECT_H)
         [w setContentAspectRatio:NSMakeSize(ASPECT_W, ASPECT_H)];
 #endif
     } else {
         [w setStyleMask:mask & ~NSWindowStyleMaskResizable];
-        [w setMinSize:sz];
         [w setMaxSize:sz];
-        [w setContentMinSize:sz];
         [w setContentMaxSize:sz];
     }
+#if defined(TARGET_WIDTH) && defined(TARGET_HEIGHT)
     [w setContentSize:sz];
+#endif
     [w setIsVisible:YES];
     [w makeKeyAndOrderFront:nil];
     [w center];
@@ -46,7 +41,11 @@ static void configure_window_style(NSWindow *w, NSSize sz, BOOL resizable) {
 static void style_all_windows(void) {
     for (NSWindow *w in [NSApp windows]) {
         if (!([w styleMask] & NSWindowStyleMaskTitled)) continue;
+#if defined(TARGET_WIDTH) && defined(TARGET_HEIGHT)
         NSSize sz = calculate_window_size(TARGET_WIDTH, TARGET_HEIGHT, [w screen] ?: [NSScreen mainScreen]);
+#else
+        NSSize sz = w.contentView.bounds.size;
+#endif
         configure_window_style(w, sz, RESIZABLE);
     }
 }
@@ -87,7 +86,11 @@ static CGRect hook_bounds(id self, SEL _cmd) {
         NSSize s = w.contentView.bounds.size;
         if (s.width > 0 && s.height > 0) return CGRectMake(0, 0, s.width, s.height);
     }
+#if defined(TARGET_WIDTH) && defined(TARGET_HEIGHT)
     return CGRectMake(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+#else
+    return CGRectMake(0, 0, 1024, 768);
+#endif
 }
 
 static void setup_screen_hooks(void) {
