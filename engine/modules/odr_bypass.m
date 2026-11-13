@@ -3,13 +3,13 @@
 
 static void hook_beginAccessingResources(id self, SEL _cmd, void (^completionHandler)(NSError *)) {
     if (completionHandler) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completionHandler(nil); });
+        completionHandler(nil);
     }
 }
 
 static void hook_conditionallyBeginAccessingResources(id self, SEL _cmd, void (^completionHandler)(BOOL)) {
     if (completionHandler) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completionHandler(YES); });
+        completionHandler(YES);
     }
 }
 
