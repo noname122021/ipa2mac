@@ -3,6 +3,7 @@ import configparser
 import glob
 import logging
 import os
+import runpy
 import plistlib
 import re
 import shlex
@@ -262,6 +263,13 @@ def patch_app(target, output_dir=None):
         subprocess.run(cmd, check=True)
         subprocess.run(["vtool", "-set-build-version", "maccatalyst", "14.0", "14.0", "-replace", "-output", target_shim, target_shim], check=True)
         insert_dylib(main_bin, "@executable_path/libshim.dylib")
+        # Python modules: engine/modules/<name>.py with apply(app_bundle), enabled by [shims] <name> = true
+        mdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules")
+        for k, v in to_dict(cfg).items():
+            py = os.path.join(mdir, f"{k}.py")
+            if "." not in k and v.lower() in ("true", "1", "yes") and os.path.isfile(py):
+                logging.info("[*] Python module %s", k)
+                runpy.run_path(py)["apply"](app_bundle)
 
         subprocess.run(["xattr", "-cr", app_bundle], capture_output=True)
         bc = cfg.get("bundle_copy", "")

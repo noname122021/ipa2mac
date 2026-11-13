@@ -34,6 +34,12 @@
 #ifndef VIRTUAL_GAMEPAD_BLOCK_TOUCHES
 #define VIRTUAL_GAMEPAD_BLOCK_TOUCHES 1
 #endif
+#ifndef VIRTUAL_GAMEPAD_MOUSE_CAPTURE   // 0: clicks go to the game as taps, no pointer capture
+#define VIRTUAL_GAMEPAD_MOUSE_CAPTURE 1
+#endif
+#ifndef VIRTUAL_GAMEPAD_ANNOUNCE        // 1: always post GCControllerDidConnect (games that only add on connect)
+#define VIRTUAL_GAMEPAD_ANNOUNCE 0
+#endif
 #ifndef VIRTUAL_GAMEPAD_CAPTURE_KEY
 #define VIRTUAL_GAMEPAD_CAPTURE_KEY "left_alt"
 #endif
@@ -160,7 +166,7 @@ static void on_key(long code, BOOL pressed) {
     if (code < 0 || code > K_MOUSE_MIDDLE || s_down[code] == pressed) return;
     s_down[code] = pressed;
     if (code == s_capture_key) { if (pressed) set_captured(!s_captured); return; }
-    if (code >= K_MOUSE_LEFT && pressed && !s_captured) {   // a click inside the game window captures the mouse
+    if (VIRTUAL_GAMEPAD_MOUSE_CAPTURE && code >= K_MOUSE_LEFT && pressed && !s_captured) {   // a click inside the game window captures the mouse
         NSWindow *w = [NSApp keyWindow];
         NSRect content = [w convertRectToScreen:w.contentLayoutRect];
         if (w && NSPointInRect([NSEvent mouseLocation], content)) set_captured(YES);
@@ -170,6 +176,10 @@ static void on_key(long code, BOOL pressed) {
         if (s_bind[i].key != code) continue;
         int *h = &s_held[s_bind[i].target];
         *h = pressed ? *h + 1 : (*h > 0 ? *h - 1 : 0);
+        if (s_bind[i].target == T_MENU && pressed && *h == 1) {   // older games only listen to controllerPausedHandler
+            void (^paused)(GCController *) = ((id (*)(id, SEL))objc_msgSend)(s_ctrl, sel_registerName("controllerPausedHandler"));
+            if (paused) paused(s_ctrl);
+        }
     }
     apply();
 }
@@ -253,7 +263,7 @@ static void init_virtual_gamepad(void) {
         [nc addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:mq usingBlock:^(NSNotification *n) { release_all(); }];
         [nc addObserverForName:@"UIApplicationDidFinishLaunchingNotification" object:nil queue:mq usingBlock:^(NSNotification *n) {
             // Announce the controller only if the game has not already picked it up from +controllers.
-            if (!s_seen_by_game) [nc postNotificationName:GCControllerDidConnectNotification object:s_ctrl];
+            if (VIRTUAL_GAMEPAD_ANNOUNCE || !s_seen_by_game) [nc postNotificationName:GCControllerDidConnectNotification object:s_ctrl];
             id link = ((id (*)(id, SEL, id, SEL))objc_msgSend)(objc_getClass("CADisplayLink"),
                 sel_registerName("displayLinkWithTarget:selector:"), [IPA2MacGamepadTick new], @selector(tick:));
             ((void (*)(id, SEL, id, id))objc_msgSend)(link, sel_registerName("addToRunLoop:forMode:"), [NSRunLoop mainRunLoop], NSRunLoopCommonModes);
