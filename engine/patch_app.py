@@ -53,17 +53,25 @@ def insert_dylib(bin_path, dylib_path):
     logging.info("[+] Injected %s", dylib_path)
 
 def apply_binary_patch(bin_path, patch_spec):
-    if not patch_spec or ":" not in patch_spec:
-        return
-    off_str, exp_hex, rep_hex = patch_spec.split(":", 2)
-    offset, rep_bytes = int(off_str, 0), bytes.fromhex(rep_hex)
-    with open(bin_path, "r+b") as f:
-        f.seek(offset)
-        if exp_hex != "*" and f.read(len(rep_bytes)) != bytes.fromhex(exp_hex):
-            return logging.warning("Binary patch mismatch at %s", off_str)
-        f.seek(offset)
-        f.write(rep_bytes)
-    logging.info("    [+] Applied binary patch at %s", off_str)
+    """Apply one or more 'offset:expected_hex:replacement_hex' patches (whitespace/newline separated)."""
+    for spec in (patch_spec or "").split():
+        if spec.count(":") != 2:
+            logging.warning("Skipping malformed binary patch: %s", spec)
+            continue
+        off_str, exp_hex, rep_hex = spec.split(":")
+        offset, rep_bytes = int(off_str, 0), bytes.fromhex(rep_hex)
+        with open(bin_path, "r+b") as f:
+            f.seek(offset)
+            current = f.read(len(rep_bytes))
+            if current == rep_bytes:
+                logging.info("    [=] Binary patch already present at %s", off_str)
+                continue
+            if exp_hex != "*" and current != bytes.fromhex(exp_hex):
+                logging.warning("Binary patch mismatch at %s (found %s)", off_str, current.hex())
+                continue
+            f.seek(offset)
+            f.write(rep_bytes)
+        logging.info("    [+] Applied binary patch at %s", off_str)
 
 def extract_ipa(ipa_path, dest_dir):
     with zipfile.ZipFile(ipa_path, "r") as zf:
@@ -91,10 +99,18 @@ def resolve_recipe(recipes_dir, bundle_id, version=None):
     return path
 
 def load_recipe(recipe_path):
+    """Flat {key: value} of all sections. A section named after a module enabled in another section
+    ([shims] mod_x = true -> [mod_x]) holds that module's parameters; its keys become "mod_x.key"."""
     cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
     if recipe_path and os.path.isfile(recipe_path):
         cp.read(recipe_path, encoding="utf-8")
-    return {k.lower(): v.strip().strip('"') for s in cp.sections() for k, v in cp.items(s)}
+    flat = {k.lower(): v.strip().strip('"') for s in cp.sections() for k, v in cp.items(s)}
+    out = {}
+    for s in cp.sections():
+        mod = s.lower() if s.lower() in flat else None
+        for k, v in cp.items(s):
+            out[f"{mod}.{k.lower()}" if mod else k.lower()] = v.strip().strip('"')
+    return out
 
 def to_dict(cfg):
     if hasattr(cfg, "sections"):
@@ -113,7 +129,7 @@ def find_module(name, modules_dir):
 
 def collect_modules(cfg, modules_dir):
     cfg = to_dict(cfg)
-    targets = [k for k, v in cfg.items() if v.lower() in ("true", "1", "yes")]
+    targets = [k for k, v in cfg.items() if "." not in k and v.lower() in ("true", "1", "yes")]
     targets += cfg.get("modules", "").replace(",", " ").split()
     if cfg.get("hardware_model"):
         targets.append("device_spoof")
@@ -143,11 +159,19 @@ def build_compile_flags(cfg):
         flags.append(f'-DDEVICE_MODEL="{cfg["hardware_model"]}"')
     if "ascii_path_redirect" in cfg:
         flags.append(f'-DASCII_PATH_TARGET="{cfg["ascii_path_redirect"]}"')
+    # Module parameters: [mod_x] key = value -> -DMOD_X_KEY=value (bool -> 1/0, integer as is, else string)
+    for k, v in cfg.items():
+        if "." not in k:
+            continue
+        name = k.replace(".", "_").upper()
+        v = " ".join(v.split())   # multi-line ini values -> one line
+        val = {"true": "1", "yes": "1", "false": "0", "no": "0"}.get(v.lower(), v)
+        flags.append(f"-D{name}={val}" if re.fullmatch(r"-?\d+", val) else f'-D{name}="{val}"')
     return flags
 
 def build_link_flags(cfg):
     cfg = to_dict(cfg)
-    fws = ("Foundation", "Security", "AppKit", "CoreGraphics", "AudioToolbox", "AVFoundation")
+    fws = ("Foundation", "Security", "AppKit", "CoreGraphics", "AudioToolbox", "AVFoundation", "Metal", "GameController")
     flags = [x for fw in fws for x in ("-framework", fw)] + shlex.split(cfg.get("link_flags", ""))
     if cfg.get("background_tasks_redirect", "").lower() in ("true", "1", "yes"):
         flags.append("-Wl,-reexport_framework,BackgroundTasks")

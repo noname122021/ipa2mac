@@ -5,10 +5,40 @@ static void (*orig_close)(id, SEL) = NULL;
 static void (*orig_close_sender)(id, SEL, id) = NULL;
 static void (*orig_perform_close)(id, SEL, id) = NULL;
 
+#ifndef MOD_WINDOW_CLOSE_IMMEDIATE_EXIT
+#define MOD_WINDOW_CLOSE_IMMEDIATE_EXIT 0
+#endif
+
+// Recipe: [mod_window_close] immediate_exit = true. For Catalyst games where the X button only hides the
+// window (scene goes to background) and exit() deadlocks in the game's atexit/static destructors:
+// the window's close button is retargeted to _exit(0) and every other window close (Cmd+Q, Cmd+W) also uses
+// _exit(0), so it quits immediately. Minimize is untouched.
+#if MOD_WINDOW_CLOSE_IMMEDIATE_EXIT
+@interface IPA2MacCloseTarget : NSObject
+@end
+@implementation IPA2MacCloseTarget
+- (void)quit:(id)sender { _exit(0); }
+@end
+
+static void retarget_close_button(NSWindow *w) {
+    static IPA2MacCloseTarget *target;
+    if (!target) target = [IPA2MacCloseTarget new];
+    if (!(w.styleMask & NSWindowStyleMaskTitled)) return;
+    NSButton *b = [w standardWindowButton:NSWindowCloseButton];
+    if (b.target == target) return;
+    b.target = target;
+    b.action = @selector(quit:);
+}
+#endif
+
 static void handle_window_exit(id self) {
     if (![self isKindOfClass:[NSWindow class]]) return;
     if (!([((NSWindow *)self) styleMask] & NSWindowStyleMaskTitled)) return;
+#if MOD_WINDOW_CLOSE_IMMEDIATE_EXIT
+    _exit(0);   // Cmd+Q / Cmd+W also end here; exit() would run the game's hanging static destructors
+#else
     exit(0);
+#endif
 }
 
 static void hook_close(id self, SEL _cmd) {
@@ -41,6 +71,13 @@ static void swizzle_method(Class cls, SEL sel, IMP imp, const char *types, IMP *
 __attribute__((constructor))
 static void init_window_close(void) {
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+#if MOD_WINDOW_CLOSE_IMMEDIATE_EXIT
+    for (NSNotificationName name in @[NSWindowDidBecomeKeyNotification, NSWindowDidBecomeMainNotification]) {
+        [nc addObserverForName:name object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            retarget_close_button([n object]);
+        }];
+    }
+#endif
     [nc addObserverForName:NSWindowWillCloseNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
         handle_window_exit([n object]);
     }];
