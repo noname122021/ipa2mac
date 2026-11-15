@@ -8,12 +8,13 @@ import plistlib
 import re
 import shlex
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
 import time
 import zipfile
+
+from insert_dylib import insert_dylib
 
 def setup_logging(log_path):
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
@@ -22,57 +23,6 @@ def setup_logging(log_path):
     ch.setLevel(logging.INFO)
     ch.setFormatter(logging.Formatter("%(message)s"))
     logging.getLogger().addHandler(ch)
-
-def insert_dylib(bin_path, dylib_path):
-    with open(bin_path, "rb") as f:
-        data = bytearray(f.read())
-    magic = struct.unpack_from("<I", data, 0)[0]
-    endian = "<" if magic == 0xFEEDFACF else (">" if magic == 0xCFFAEDFE else None)
-    if not endian:
-        raise ValueError("Not a 64-bit Mach-O binary")
-    ncmds, sizeofcmds = struct.unpack_from(f"{endian}II", data, 16)
-    off = 32
-    for _ in range(ncmds):
-        cmd, cmdsize = struct.unpack_from(f"{endian}II", data, off)
-        name_off = struct.unpack_from(f"{endian}I", data, off + 8)[0] if cmd in (0xC, 0x80000018, 0xD, 0x18) else 0
-        name = data[off + name_off : off + cmdsize].split(b"\x00", 1)[0].decode("utf-8", "ignore") if name_off else ""
-        if name == dylib_path:
-            logging.info("[*] %s already present", dylib_path)
-            return
-        off += cmdsize
-    path_bytes = dylib_path.encode("utf-8") + b"\x00"
-    cmdsize = (24 + len(path_bytes) + 7) & ~7
-    pad = cmdsize - 24 - len(path_bytes)
-    cmds_end = 32 + sizeofcmds
-    if len(data) < cmds_end + cmdsize or data[cmds_end : cmds_end + cmdsize] != b"\x00" * cmdsize:
-        raise ValueError(f"Not enough zero-padding to insert LC_LOAD_DYLIB ({cmdsize} bytes needed)")
-    cmd = struct.pack(f"{endian}IIIIII", 0xC, cmdsize, 24, 2, 0x10000, 0x10000) + path_bytes + (b"\x00" * pad)
-    data[cmds_end : cmds_end + cmdsize] = cmd
-    struct.pack_into(f"{endian}II", data, 16, ncmds + 1, sizeofcmds + cmdsize)
-    with open(bin_path, "wb") as f:
-        f.write(data)
-    logging.info("[+] Injected %s", dylib_path)
-
-def apply_binary_patch(bin_path, patch_spec):
-    """Apply one or more 'offset:expected_hex:replacement_hex' patches (whitespace/newline separated)."""
-    for spec in (patch_spec or "").split():
-        if spec.count(":") != 2:
-            logging.warning("Skipping malformed binary patch: %s", spec)
-            continue
-        off_str, exp_hex, rep_hex = spec.split(":")
-        offset, rep_bytes = int(off_str, 0), bytes.fromhex(rep_hex)
-        with open(bin_path, "r+b") as f:
-            f.seek(offset)
-            current = f.read(len(rep_bytes))
-            if current == rep_bytes:
-                logging.info("    [=] Binary patch already present at %s", off_str)
-                continue
-            if exp_hex != "*" and current != bytes.fromhex(exp_hex):
-                logging.warning("Binary patch mismatch at %s (found %s)", off_str, current.hex())
-                continue
-            f.seek(offset)
-            f.write(rep_bytes)
-        logging.info("    [+] Applied binary patch at %s", off_str)
 
 def extract_ipa(ipa_path, dest_dir):
     with zipfile.ZipFile(ipa_path, "r") as zf:
@@ -86,14 +36,13 @@ def extract_ipa(ipa_path, dest_dir):
     return apps[0]
 
 def resolve_recipe(recipes_dir, bundle_id, version=None):
-    override = os.environ.get("RECIPE_OVERRIDE")
     v_path = os.path.join(recipes_dir, f"{bundle_id}@{version}.ini") if version else ""
     default_path = os.path.join(recipes_dir, f"{bundle_id}.ini")
-    path = override or (v_path if os.path.isfile(v_path) else default_path)
+    path = (v_path if os.path.isfile(v_path) else default_path)
     if not os.path.isfile(path):
         return None
-    with open(path, "r", encoding="utf-8") as f:
-        m = re.search(r"^(?:target_ini|path)\s*=\s*([^\r\n;#]+)", f.read(), re.MULTILINE)
+    with open(path, "r", encoding="utf-8") as f:   # alias recipe: [include] path = other.ini
+        m = re.search(r"^path\s*=\s*([^\r\n;#]+)", f.read(), re.MULTILINE)
     if m:
         target = os.path.join(recipes_dir, m.group(1).strip().strip('"'))
         return target if os.path.isfile(target) else path
@@ -113,53 +62,27 @@ def load_recipe(recipe_path):
             out[f"{mod}.{k.lower()}" if mod else k.lower()] = v.strip().strip('"')
     return out
 
-def to_dict(cfg):
-    if hasattr(cfg, "sections"):
-        return {k.lower(): v.strip().strip('"') for s in cfg.sections() for k, v in cfg.items(s)}
-    return cfg or {}
-
-def find_module(name, modules_dir):
-    base = name.removeprefix("mod_")
-    for cand in (name, f"{name}.m", f"{name}.c", f"{base}.m", f"{base}.c", f"mod_{base}.m", f"mod_{base}.c"):
-        if os.path.isfile(cand):
-            return os.path.abspath(cand)
-        cand_path = os.path.join(modules_dir, cand)
-        if os.path.isfile(cand_path):
-            return cand_path
-    return None
+def is_on(v):
+    return str(v).lower() in ("true", "1", "yes")
 
 def collect_modules(cfg, modules_dir):
-    cfg = to_dict(cfg)
-    targets = [k for k, v in cfg.items() if "." not in k and v.lower() in ("true", "1", "yes")]
-    targets += cfg.get("modules", "").replace(",", " ").split()
-    if cfg.get("hardware_model"):
-        targets.append("device_spoof")
+    """Every `name = true` with engine/modules/name.{m,c,py} is a module."""
     mods = []
-    for t in targets:
-        p = find_module(t, modules_dir)
-        if p and p not in mods:
-            mods.append(p)
+    for k, v in cfg.items():
+        if "." in k or not is_on(v):
+            continue
+        for ext in (".m", ".c", ".py"):
+            p = os.path.join(modules_dir, k + ext)
+            if os.path.isfile(p) and p not in mods:
+                mods.append(p)
     return mods
 
+def module_params(cfg, path):
+    name = os.path.splitext(os.path.basename(path))[0]
+    return {k.split(".", 1)[1]: v for k, v in cfg.items() if k.startswith(name + ".")}
+
 def build_compile_flags(cfg):
-    cfg = to_dict(cfg)
-    flags = shlex.split(cfg.get("compile_flags", ""))
-    flags += [f"-DTARGET_WIDTH={cfg['width']}"] if "width" in cfg else []
-    flags += [f"-DTARGET_HEIGHT={cfg['height']}"] if "height" in cfg else []
-    aspect = cfg.get("aspect_ratio", "")
-    if ":" in aspect and aspect != "free":
-        aw, ah = aspect.split(":", 1)
-        flags += [f"-DASPECT_W={aw}", f"-DASPECT_H={ah}"]
-    if cfg.get("resizable") == "false":
-        flags.append("-DRESIZABLE=0")
-    if cfg.get("scale_mode") == "aspect_fit" or cfg.get("uiscreen_bounds_fixed") in ("true", "1", "yes"):
-        flags.append("-DHOOK_UISCREEN=1")
-    if cfg.get("user_interface_idiom") in ("pad", "1"):
-        flags.append("-DIDIOM_PAD=1")
-    if "hardware_model" in cfg:
-        flags.append(f'-DDEVICE_MODEL="{cfg["hardware_model"]}"')
-    if "ascii_path_redirect" in cfg:
-        flags.append(f'-DASCII_PATH_TARGET="{cfg["ascii_path_redirect"]}"')
+    flags = []
     # Module parameters: [mod_x] key = value -> -DMOD_X_KEY=value (bool -> 1/0, integer as is, else string)
     for k, v in cfg.items():
         if "." not in k:
@@ -171,10 +94,9 @@ def build_compile_flags(cfg):
     return flags
 
 def build_link_flags(cfg):
-    cfg = to_dict(cfg)
     fws = ("Foundation", "Security", "AppKit", "CoreGraphics", "AudioToolbox", "AVFoundation", "Metal", "GameController")
-    flags = [x for fw in fws for x in ("-framework", fw)] + shlex.split(cfg.get("link_flags", ""))
-    if cfg.get("background_tasks_redirect", "").lower() in ("true", "1", "yes"):
+    flags = [x for fw in fws for x in ("-framework", fw)]
+    if is_on(cfg.get("background_tasks_redirect")):
         flags.append("-Wl,-reexport_framework,BackgroundTasks")
     return flags
 
@@ -204,8 +126,6 @@ def patch_all_binaries(app_bundle, redirect_bg=False):
             patch_mach_o(os.path.join(root, f), redirect_bg)
 
 def patch_plist(plist_path):
-    if not os.path.isfile(plist_path):
-        return
     with open(plist_path, "rb") as f:
         data = plistlib.load(f)
     data["CFBundleSupportedPlatforms"] = ["iPhoneOS", "MacOSX"]
@@ -217,6 +137,7 @@ def patch_plist(plist_path):
 
 def codesign_bundle(app_bundle):
     logging.info("[*] Codesigning binaries and bundle...")
+    # Nested code first: --deep alone keeps stale vendor signatures on embedded frameworks.
     for root, dirs, files in os.walk(app_bundle, topdown=False):
         for it in [os.path.join(root, d) for d in dirs if d.endswith((".framework", ".appex"))] + \
                   [os.path.join(root, f) for f in files if f.endswith(".dylib")]:
@@ -231,7 +152,7 @@ def patch_app(target, output_dir=None):
         logging.info("[*] Target app bundle: %s", app_bundle)
         plist_path = os.path.join(app_bundle, "Info.plist")
         with open(plist_path, "rb") as f:
-            plist = plistlib.load(f) if os.path.isfile(plist_path) else {}
+            plist = plistlib.load(f)
         exe = plist.get("CFBundleExecutable") or os.path.splitext(os.path.basename(app_bundle))[0]
         main_bin = os.path.join(app_bundle, exe)
         os.chmod(main_bin, 0o755)
@@ -246,38 +167,24 @@ def patch_app(target, output_dir=None):
         if recipe_path:
             shutil.copyfile(recipe_path, os.path.join(app_bundle, "recipe.ini"))
 
-        redirect_bg = cfg.get("background_tasks_redirect", "").lower() in ("true", "1", "yes")
+        redirect_bg = is_on(cfg.get("background_tasks_redirect"))
         patch_mach_o(main_bin, redirect_bg)
-        apply_binary_patch(main_bin, cfg.get("binary_patch", ""))
         patch_all_binaries(app_bundle, redirect_bg)
 
         mods = collect_modules(cfg, os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules"))
-        if os.environ.get("DUMP_MODULES") == "1":
-            print("\n".join(os.path.basename(m) for m in mods))
-            sys.exit(0)
-
+        native = [m for m in mods if not m.endswith(".py")]
         cflags, lflags = build_compile_flags(cfg), build_link_flags(cfg)
         logging.info("[*] JIT Compiling libshim.dylib for %s...", os.path.basename(app_bundle))
         target_shim = os.path.join(app_bundle, "libshim.dylib")
-        cmd = ["clang", "-dynamiclib", "-arch", "arm64", "-install_name", "@executable_path/libshim.dylib"] + lflags + cflags + mods + ["-o", target_shim]
+        cmd = ["clang", "-dynamiclib", "-arch", "arm64", "-install_name", "@executable_path/libshim.dylib"] + lflags + cflags + native + ["-o", target_shim]
         subprocess.run(cmd, check=True)
         subprocess.run(["vtool", "-set-build-version", "maccatalyst", "14.0", "14.0", "-replace", "-output", target_shim, target_shim], check=True)
         insert_dylib(main_bin, "@executable_path/libshim.dylib")
-        # Python modules: engine/modules/<name>.py with apply(app_bundle), enabled by [shims] <name> = true
-        mdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules")
-        for k, v in to_dict(cfg).items():
-            py = os.path.join(mdir, f"{k}.py")
-            if "." not in k and v.lower() in ("true", "1", "yes") and os.path.isfile(py):
-                logging.info("[*] Python module %s", k)
-                runpy.run_path(py)["apply"](app_bundle)
+        for py in (m for m in mods if m.endswith(".py")):   # bundle-level modules: apply(app_bundle)
+            logging.info("[*] Python module %s", os.path.basename(py))
+            runpy.run_path(py)["apply"](app_bundle, module_params(cfg, py))
 
         subprocess.run(["xattr", "-cr", app_bundle], capture_output=True)
-        bc = cfg.get("bundle_copy", "")
-        if ":" in bc:
-            s, d = bc.split(":", 1)
-            src, dst = os.path.join(app_bundle, s), os.path.join(app_bundle, d)
-            if os.path.isfile(src) and not os.path.exists(dst):
-                shutil.copyfile(src, dst)
 
         patch_plist(plist_path)
         codesign_bundle(app_bundle)

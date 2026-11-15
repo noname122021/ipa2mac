@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import struct
 import sys
 
@@ -8,7 +9,7 @@ def parse_header(data: bytearray):
         return "<", struct.unpack_from("<II", data, 16)
     if magic == 0xcffaedfe:
         return ">", struct.unpack_from(">II", data, 16)
-    sys.exit("[-] Not a 64-bit Mach-O binary")
+    raise ValueError("Not a 64-bit Mach-O binary")
 
 def has_dylib(data: bytearray, endian: str, ncmds: int, target: str) -> bool:
     offset = 32
@@ -26,22 +27,23 @@ def insert_dylib(bin_path: str, dylib_path: str) -> None:
         data = bytearray(f.read())
     endian, (ncmds, sizeofcmds) = parse_header(data)
     if has_dylib(data, endian, ncmds, dylib_path):
-        print(f"[*] {dylib_path} already present")
+        logging.info("[*] %s already present", dylib_path)
         return
     cmds_end = 32 + sizeofcmds
     path_bytes = dylib_path.encode("utf-8") + b"\x00"
     cmdsize = (24 + len(path_bytes) + 7) & ~7
     pad = cmdsize - 24 - len(path_bytes)
     if len(data) < cmds_end + cmdsize or data[cmds_end : cmds_end + cmdsize] != b"\x00" * cmdsize:
-        sys.exit(f"[-] Not enough zero-padding to insert LC_LOAD_DYLIB ({cmdsize} bytes needed)")
+        raise ValueError(f"Not enough zero-padding to insert LC_LOAD_DYLIB ({cmdsize} bytes needed)")
     cmd = struct.pack(f"{endian}IIIIII", 0xc, cmdsize, 24, 2, 0x10000, 0x10000) + path_bytes + (b"\x00" * pad)
     data[cmds_end : cmds_end + cmdsize] = cmd
     struct.pack_into(f"{endian}II", data, 16, ncmds + 1, sizeofcmds + cmdsize)
     with open(bin_path, "wb") as f:
         f.write(data)
-    print(f"[+] Injected {dylib_path}")
+    logging.info("[+] Injected %s", dylib_path)
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         sys.exit(f"Usage: {sys.argv[0]} <binary> <dylib_path>")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     insert_dylib(sys.argv[1], sys.argv[2])

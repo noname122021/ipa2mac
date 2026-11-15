@@ -1,9 +1,29 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 
-#ifndef RESIZABLE
-#define RESIZABLE 1
+// Recipe: [mod_window]
+//   width, height   initial content size (points); omitted = leave the system size
+//   aspect = 16:9   lock the content aspect ratio while resizing
+//   resizable       default true
+//   hook_screen     UIScreen.bounds follows the window content size
+//   screen = WxH    UIScreen.bounds fixed to WxH (nativeBounds 2x)
+//   pad_idiom       UIDevice.userInterfaceIdiom = pad
+#ifndef MOD_WINDOW_RESIZABLE
+#define MOD_WINDOW_RESIZABLE 1
 #endif
+#if defined(MOD_WINDOW_WIDTH) && defined(MOD_WINDOW_HEIGHT)
+#define HAS_SIZE 1
+#endif
+#if MOD_WINDOW_HOOK_SCREEN || defined(MOD_WINDOW_SCREEN)
+#define HOOK_UISCREEN 1
+#endif
+
+static NSSize parse_pair(const char *s, char sep) {   // "16:9" / "320x480"
+    double a = 0, b = 0;
+    char fmt[] = "%lf_%lf"; fmt[3] = sep;
+    sscanf(s, fmt, &a, &b);
+    return NSMakeSize(a, b);
+}
 
 static NSSize calculate_window_size(CGFloat targetW, CGFloat targetH, NSScreen *scr) {
     NSRect visible = scr ? [scr visibleFrame] : NSMakeRect(0, 0, 1440, 900);
@@ -17,22 +37,31 @@ static NSSize calculate_window_size(CGFloat targetW, CGFloat targetH, NSScreen *
 
 static void configure_window_style(NSWindow *w, NSSize sz, BOOL resizable) {
     NSWindowStyleMask mask = [w styleMask] | NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
+#if MOD_WINDOW_HIDE_TITLEBAR
+    // PlayCover style: content fills the window, only traffic lights remain
+    mask |= NSWindowStyleMaskFullSizeContentView;
+    [w setTitlebarAppearsTransparent:YES];
+    [w setTitleVisibility:NSWindowTitleHidden];
+#else
+    // Catalyst sets FullSizeContentView, so games draw under the title bar
+    mask &= ~NSWindowStyleMaskFullSizeContentView;
+#endif
     [w setMinSize:NSMakeSize(0, 0)];
     [w setContentMinSize:NSMakeSize(0, 0)];
     if (resizable) {
         [w setStyleMask:mask | NSWindowStyleMaskResizable];
         [w setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
-#if defined(ASPECT_W) && defined(ASPECT_H)
-        [w setContentAspectRatio:NSMakeSize(ASPECT_W, ASPECT_H)];
+#if defined(MOD_WINDOW_ASPECT)
+        [w setContentAspectRatio:parse_pair(MOD_WINDOW_ASPECT, ':')];
 #endif
     } else {
         [w setStyleMask:mask & ~NSWindowStyleMaskResizable];
         [w setMaxSize:sz];
         [w setContentMaxSize:sz];
     }
-#if defined(TARGET_WIDTH) && defined(TARGET_HEIGHT)
+    // nudge so Catalyst re-lays out the UIWindow after the style change
+    [w setContentSize:NSMakeSize(sz.width, sz.height + 1)];
     [w setContentSize:sz];
-#endif
     [w setIsVisible:YES];
     [w makeKeyAndOrderFront:nil];
     [w center];
@@ -41,12 +70,16 @@ static void configure_window_style(NSWindow *w, NSSize sz, BOOL resizable) {
 static void style_all_windows(void) {
     for (NSWindow *w in [NSApp windows]) {
         if (!([w styleMask] & NSWindowStyleMaskTitled)) continue;
-#if defined(TARGET_WIDTH) && defined(TARGET_HEIGHT)
-        NSSize sz = calculate_window_size(TARGET_WIDTH, TARGET_HEIGHT, [w screen] ?: [NSScreen mainScreen]);
+#if HAS_SIZE
+        NSSize sz = calculate_window_size(MOD_WINDOW_WIDTH, MOD_WINDOW_HEIGHT, [w screen] ?: [NSScreen mainScreen]);
 #else
         NSSize sz = w.contentView.bounds.size;
+#if defined(MOD_WINDOW_ASPECT)
+        NSSize r = parse_pair(MOD_WINDOW_ASPECT, ':');
+        sz.height = round(sz.width * r.height / r.width);
 #endif
-        configure_window_style(w, sz, RESIZABLE);
+#endif
+        configure_window_style(w, sz, MOD_WINDOW_RESIZABLE);
     }
 }
 
@@ -86,8 +119,8 @@ static CGRect hook_bounds(id self, SEL _cmd) {
         NSSize s = w.contentView.bounds.size;
         if (s.width > 0 && s.height > 0) return CGRectMake(0, 0, s.width, s.height);
     }
-#if defined(TARGET_WIDTH) && defined(TARGET_HEIGHT)
-    return CGRectMake(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+#if HAS_SIZE
+    return CGRectMake(0, 0, MOD_WINDOW_WIDTH, MOD_WINDOW_HEIGHT);
 #else
     return CGRectMake(0, 0, 1024, 768);
 #endif
@@ -96,11 +129,12 @@ static CGRect hook_bounds(id self, SEL _cmd) {
 static void setup_screen_hooks(void) {
     Class sc = objc_getClass("UIScreen");
     if (!sc) return;
-#if defined(IS_CTR)
+#if defined(MOD_WINDOW_SCREEN)
+    NSSize fixed = parse_pair(MOD_WINDOW_SCREEN, 'x');
     Method bm = class_getInstanceMethod(sc, sel_registerName("bounds"));
-    if (bm) method_setImplementation(bm, imp_implementationWithBlock(^CGRect(id s){ return CGRectMake(0,0,320,480); }));
+    if (bm) method_setImplementation(bm, imp_implementationWithBlock(^CGRect(id s){ return CGRectMake(0, 0, fixed.width, fixed.height); }));
     Method nm = class_getInstanceMethod(sc, sel_registerName("nativeBounds"));
-    if (nm) method_setImplementation(nm, imp_implementationWithBlock(^CGRect(id s){ return CGRectMake(0,0,640,960); }));
+    if (nm) method_setImplementation(nm, imp_implementationWithBlock(^CGRect(id s){ return CGRectMake(0, 0, fixed.width * 2, fixed.height * 2); }));
 #else
     Method m = class_getInstanceMethod(sc, sel_registerName("bounds"));
     if (m) method_setImplementation(m, (IMP)hook_bounds);
@@ -111,7 +145,7 @@ static void setup_screen_hooks(void) {
 static void setup_parser_and_device(void) {
     Class parser = objc_getClass("_UIApplicationInfoParser");
     if (parser) swizzle_method(parser, sel_registerName("requiresFullScreen"), imp_implementationWithBlock(^BOOL(id s){ return NO; }), "B@:");
-#if defined(IDIOM_PAD)
+#if MOD_WINDOW_PAD_IDIOM
     Class dev = objc_getClass("UIDevice");
     if (dev) swizzle_method(dev, sel_registerName("userInterfaceIdiom"), imp_implementationWithBlock(^NSInteger(id s){ return 1; }), "q@:");
 #endif

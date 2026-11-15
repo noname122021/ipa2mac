@@ -4,8 +4,8 @@
 #include <dlfcn.h>
 #include <errno.h>
 
-#ifndef DEVICE_MODEL
-#define DEVICE_MODEL "iPad13,8"
+#ifndef DEVICE_SPOOF_MODEL
+#define DEVICE_SPOOF_MODEL "iPad13,8"
 #endif
 
 #define DYLD_INTERPOSE(_replacement, _replacee) \
@@ -32,7 +32,7 @@ static int copy_spoofed_string(const char *val, void *oldp, size_t *oldlenp) {
 
 static int shim_uname(struct utsname *uts) {
     if (uts) {
-        strncpy(uts->machine, DEVICE_MODEL, sizeof(uts->machine) - 1);
+        strncpy(uts->machine, DEVICE_SPOOF_MODEL, sizeof(uts->machine) - 1);
         uts->machine[sizeof(uts->machine) - 1] = '\0';
     }
     return 0;
@@ -44,7 +44,7 @@ static int shim_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void
         return sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
     if (name && (strcmp(name, "hw.machine") == 0 || strcmp(name, "hw.model") == 0 || strcmp(name, "hw.product") == 0)) {
-        return copy_spoofed_string(DEVICE_MODEL, oldp, oldlenp);
+        return copy_spoofed_string(DEVICE_SPOOF_MODEL, oldp, oldlenp);
     }
     return sysctlbyname(name, oldp, oldlenp, newp, newlen);
 }
@@ -55,7 +55,7 @@ static int shim_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, vo
         return sysctl(name, namelen, oldp, oldlenp, newp, newlen);
     }
     if (namelen >= 2 && name && name[0] == CTL_HW && (name[1] == HW_MACHINE || name[1] == HW_MODEL)) {
-        return copy_spoofed_string(DEVICE_MODEL, oldp, oldlenp);
+        return copy_spoofed_string(DEVICE_SPOOF_MODEL, oldp, oldlenp);
     }
     return sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 }

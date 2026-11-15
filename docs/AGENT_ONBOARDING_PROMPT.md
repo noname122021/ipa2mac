@@ -17,7 +17,7 @@ Your goal is to port and adapt a non-encrypted arm64 iOS application (`.ipa` or 
 4. **Declarative Recipes with Version Fallback**: All quirks, window geometry, and shim toggles live in `recipes/`. Recipe resolution supports version-specific overrides:
    - `recipes/{bundle_id}@{version}.ini` (exact version match)
    - `recipes/{bundle_id}.ini` (unversioned default)
-   - `target_ini = ...` (recipe alias/inheritance)
+   - `[include] path = other.ini` (alias recipe)
 5. **Execution Timers & Logging**: All patching output is timestamped with fixed-width timers (`[  0.1s]`, `[%5.1fs]`), writing structured logs to `ipa2mac.log`.
 6. **Regression Verification**: The repository maintains an automated test suite (`python3 tests/verify_recipes.py`) validating module discovery, compiler flags, and backward compatibility.
 
@@ -59,36 +59,35 @@ bundle_id = <Bundle ID from Info.plist>
 tested_version = <Version from Info.plist>
 engine = <unity | ue3 | playdead | frogmind | cocos2d | compose | native_swift | native_objc>
 
-[window]
-width = 1280
+[mod_window]
+width = 1280            ; omit width/height to keep the system window size
 height = 720
-aspect_ratio = 16:9 ; or 4:3, 9:16, free
+aspect = 16:9           ; omit for a free aspect
 resizable = true
-orientation = landscape ; landscape | portrait | free
-scale_mode = aspect_fit
+hook_screen = true      ; UIScreen.bounds follows the window
+; screen = 320x480      ; fixed UIScreen.bounds (nativeBounds 2x)
+; pad_idiom = true      ; UIDevice.userInterfaceIdiom = pad
 
-[shims]
-keychain = in_memory
-hardware_model = iPad8,1 ; or iPad13,8, iPad14,3
-audio_session_fix = true ; set true only if app hangs on AVAudioSession
-memory_fault_recovery = false ; true if app crashes on memory access violations
-dyld_fishhook_suppress = false ; true for legacy apps using fishhook
+[shims]                 ; ONLY module names; each enables engine/modules/<name>.{m,c,py}
+core_keychain = true
+mod_window = true
+mod_window_close = true
+mod_input_context = true
+device_spoof = true             ; params in [device_spoof]
 assert_suppress = true
-ubiquitous_store = false ; true for Unity/iCloud apps without entitlements
-game_center_auto_auth = false ; true if app hangs on Game Center login
-statfs_spoof = false ; true if app checks for >64GB free disk space
-odr_bypass = false ; true if app hangs on On-Demand Resources
-device_rotation_menu = false ; true for games requiring device rotation
-background_tasks_redirect = false ; true if missing BGContinuedProcessingTaskRequest
-path_redirect = documents
-activation_policy = regular
+; audio_session_fix, memory_fault_recovery, dyld_fishhook_suppress, ubiquitous_store,
+; game_center_auto_auth, statfs_spoof, odr_bypass, device_rotation_menu,
+; background_tasks_redirect, virtual_gamepad, binary_patch, bundle_copy, ...
+
+[device_spoof]          ; module parameters: [<module>] key = value
+model = iPad8,1
 ```
 
 #### Step 5: Add or Adjust Modular Shims (If Needed)
 If the application requires a new runtime hook:
 1. Add a focused module in `engine/modules/<module_name>.[mc]`.
 2. Reference the module toggle under `[shims]` in your recipe.
-3. If custom flags are needed, add `compile_flags = ...` or `link_flags = ...`.
+3. Module parameters go in a `[<module_name>]` section; `key = value` becomes `-D<MODULE_NAME>_<KEY>=value` (bool -> 1/0, integer as is, else a string). Python modules (`<name>.py` with `apply(app_bundle, params)`) receive them as a dict.
 4. Re-run `python3 engine/patch_app.py "/path/to/TargetApp.ipa"`.
 
 #### Step 6: Verify Regression Suite

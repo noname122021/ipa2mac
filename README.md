@@ -202,7 +202,7 @@ For full technical teardowns, planned Tier 2 targets (35+ apps), and engine-spec
 Recipes live in the `recipes/` directory. When patching an application, `ipa2mac` resolves recipes using version-specific fallback:
 1. `recipes/{bundle_id}@{version}.ini` (exact version match)
 2. `recipes/{bundle_id}.ini` (unversioned default)
-3. Recipe inheritance via `target_ini = ...`
+3. Alias recipes: `[include] path = other.ini`
 
 To add or customize a recipe, place `{bundle_id}.ini` or `{bundle_id}@{version}.ini` into the `recipes/` folder.
 
@@ -217,21 +217,24 @@ engine = playdead_cpp
 rendering = custom_metal
 sound_system = fmod_coreaudio
 
-[window]
+[mod_window]            ; parameters of the mod_window module
 width = 1152
 height = 648
-aspect_ratio = 16:9
+aspect = 16:9
 resizable = true
-orientation = landscape
-scale_mode = aspect_fit
+hook_screen = true      ; UIScreen.bounds follows the window
 
-[shims]
-hardware_model = iPad8,1
+[shims]                 ; only module names: <name> = true -> engine/modules/<name>.{m,c,py}
+device_spoof = true
 game_center_auto_auth = true
-keychain = in_memory
+core_keychain = true
+mod_window = true
+mod_window_close = true
+mod_input_context = true
 assert_suppress = true
-path_redirect = documents
-activation_policy = regular
+
+[device_spoof]          ; [<module>] key = value -> -D<MODULE>_<KEY>=value (Python modules get a dict)
+model = iPad7,1
 ```
 
 ### Adding a New Recipe & AI-Assisted Porting
@@ -285,7 +288,6 @@ With this diagnostic data, missing iOS APIs, audio session deadlocks, or window 
 │   ├── patch_app.py          # Core Python conversion engine (CLI, REPL, JIT shim compilation)
 │   ├── insert_dylib.py       # Mach-O LC_LOAD_DYLIB injection utility
 │   ├── modules/              # Modular JIT micro-shim source files (*.m, *.c)
-│   └── build_shim.sh         # Helper script for building standalone universal shim
 ├── tests/
 │   └── verify_recipes.py     # Backward compatibility and recipe verification suite
 ├── recipes/                  # Declarative quirks catalog ({bundle_id}[@{version}].ini)
