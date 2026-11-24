@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import concurrent.futures
 import configparser
 import glob
 import logging
@@ -26,10 +27,12 @@ def setup_logging(log_path):
 
 def extract_ipa(ipa_path, dest_dir):
     with zipfile.ZipFile(ipa_path, "r") as zf:
-        for info in zf.infolist():
+        def _extract(info):
             extracted = zf.extract(info, dest_dir)
             if info.external_attr >> 16:
                 os.chmod(extracted, info.external_attr >> 16)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            list(pool.map(_extract, zf.infolist()))
     apps = glob.glob(os.path.join(dest_dir, "Payload", "*.app"))
     if not apps:
         raise FileNotFoundError("No .app bundle found in IPA Payload")
@@ -146,8 +149,11 @@ def codesign_bundle(app_bundle):
 
 def patch_app(target, output_dir=None):
     start_time = time.time()
-    temp_dir = tempfile.mkdtemp(prefix="ipa_patch_") if target.endswith(".ipa") else None
+    out_dir = output_dir or os.path.dirname(os.path.abspath(target))
+    temp_dir = tempfile.mkdtemp(prefix=".ipa_tmp_", dir=out_dir) if target.endswith(".ipa") else None
     try:
+        if temp_dir:
+            logging.info("[*] Extracting %s...", os.path.basename(target))
         app_bundle = extract_ipa(target, temp_dir) if temp_dir else target
         logging.info("[*] Target app bundle: %s", app_bundle)
         plist_path = os.path.join(app_bundle, "Info.plist")
@@ -199,8 +205,15 @@ def patch_app(target, output_dir=None):
 
         subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", app_bundle], capture_output=True)
         logging.info("[%5.1fs] [+] Successfully patched %s", time.time() - start_time, app_bundle)
-        bid = plist.get("CFBundleIdentifier", "")
-        logging.info("[*] Data container: ~/Library/Containers/%s/Data", bid)
+        app_name = os.path.splitext(os.path.basename(app_bundle))[0]
+        if is_on(cfg.get("portable_home")):
+            os.makedirs(os.path.join(out_dir, f"{app_name}_Data"), exist_ok=True)
+            logging.info("[*] Data container: portable (%s_Data next to .app)", app_name)
+        hint = cfg.get("metadata.hint") or cfg.get("hint")
+        if hint:
+            for line in hint.splitlines():
+                if line.strip():
+                    logging.info("[*] Note: %s", line.strip())
         return app_bundle
     except Exception as e:
         logging.error("[%5.1fs] [-] Conversion failed: %s", time.time() - start_time, e)

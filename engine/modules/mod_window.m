@@ -98,6 +98,7 @@ static void schedule_window_sync(void) {
 }
 
 static void setup_environment(void) {
+    if ([NSHomeDirectory() hasSuffix:@"_Data"] || getenv("CFFIXED_USER_HOME")) return;
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.catalyst.game";
     NSString *appHome = [NSString stringWithFormat:@"%@/Library/Containers/%@/Data", NSHomeDirectory(), bid];
     NSString *docPath = [appHome stringByAppendingPathComponent:@"Documents"];

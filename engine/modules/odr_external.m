@@ -113,11 +113,23 @@ static void init_odr_external(void) {
         strlcpy(s_prefix, [mb.bundlePath stringByAppendingPathComponent:s_subdir].fileSystemRepresentation, sizeof(s_prefix));
         s_prefix_len = strlen(s_prefix);
 
-        NSString *root = @ODR_EXTERNAL_DIR;
-        if (![root hasPrefix:@"/"]) {
-            struct passwd *pw = getpwuid(getuid());
-            NSString *home = pw ? @(pw->pw_dir) : NSHomeDirectory();
-            root = [home stringByAppendingFormat:@"/Library/Containers/%@/Data/%@", mb.bundleIdentifier, root];
+        NSString *parent = mb.bundlePath.stringByDeletingLastPathComponent;
+        NSString *appName = mb.bundlePath.lastPathComponent.stringByDeletingPathExtension;
+        NSString *n1 = [parent stringByAppendingPathComponent:[appName stringByAppendingString:@"_Data"]];
+        NSString *n2 = [parent stringByAppendingPathComponent:[mb.bundleIdentifier stringByAppendingString:@"_Data"]];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *root = nil;
+        NSString *neighbor = [fm fileExistsAtPath:n1] ? n1 : ([fm fileExistsAtPath:n2] ? n2 : nil);
+        if (neighbor) {
+            NSString *sub = [neighbor stringByAppendingPathComponent:@ODR_EXTERNAL_DIR];
+            root = [fm fileExistsAtPath:sub] ? sub : neighbor;
+        } else {
+            root = @ODR_EXTERNAL_DIR;
+            if (![root hasPrefix:@"/"]) {
+                struct passwd *pw = getpwuid(getuid());
+                NSString *home = pw ? @(pw->pw_dir) : NSHomeDirectory();
+                root = [home stringByAppendingFormat:@"/Library/Containers/%@/Data/%@", mb.bundleIdentifier, root];
+            }
         }
         BOOL isDir = NO;
         if (![[NSFileManager defaultManager] fileExistsAtPath:root isDirectory:&isDir] || !isDir) {
