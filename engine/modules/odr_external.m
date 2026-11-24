@@ -122,6 +122,12 @@ static void init_odr_external(void) {
         NSString *neighbor = [fm fileExistsAtPath:n1] ? n1 : ([fm fileExistsAtPath:n2] ? n2 : nil);
         if (neighbor) {
             NSString *sub = [neighbor stringByAppendingPathComponent:@ODR_EXTERNAL_DIR];
+            if (![fm fileExistsAtPath:sub]) {
+                for (NSString *item in [fm contentsOfDirectoryAtPath:neighbor error:nil]) {
+                    NSString *nested = [[neighbor stringByAppendingPathComponent:item] stringByAppendingPathComponent:@ODR_EXTERNAL_DIR];
+                    if ([fm fileExistsAtPath:nested]) { sub = nested; break; }
+                }
+            }
             root = [fm fileExistsAtPath:sub] ? sub : neighbor;
         } else {
             root = @ODR_EXTERNAL_DIR;
