@@ -128,9 +128,12 @@ def patch_all_binaries(app_bundle, redirect_bg=False):
         for f in [f for f in files if f.endswith(".dylib")]:
             patch_mach_o(os.path.join(root, f), redirect_bg)
 
-def patch_plist(plist_path):
+def patch_plist(plist_path, app_name=None):
     with open(plist_path, "rb") as f:
         data = plistlib.load(f)
+    if app_name:
+        data["CFBundleDisplayName"] = app_name
+        data["CFBundleName"] = app_name
     data["CFBundleSupportedPlatforms"] = ["iPhoneOS", "MacOSX"]
     data["LSMinimumSystemVersion"] = "14.0"
     data["UIDeviceFamily"] = [1, 2, 6]
@@ -192,12 +195,14 @@ def patch_app(target, output_dir=None):
 
         subprocess.run(["xattr", "-cr", app_bundle], capture_output=True)
 
-        patch_plist(plist_path)
+        app_title = cfg.get("metadata.name") or cfg.get("name")
+        patch_plist(plist_path, app_title)
         codesign_bundle(app_bundle)
 
         if temp_dir:
             out_dir = output_dir or os.path.dirname(os.path.abspath(target))
-            dest = os.path.join(out_dir, os.path.basename(app_bundle))
+            clean_name = f"{app_title}.app" if app_title else os.path.basename(app_bundle)
+            dest = os.path.join(out_dir, clean_name)
             if os.path.exists(dest):
                 shutil.rmtree(dest) if os.path.isdir(dest) else os.remove(dest)
             shutil.move(app_bundle, dest)
