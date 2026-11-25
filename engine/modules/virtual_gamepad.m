@@ -224,11 +224,18 @@ static BOOL hidden_name(NSString *n) {
 }
 static id h_add_block(id self, SEL _cmd, NSString *name, id obj, NSOperationQueue *q, id block) {
     if (hidden_name(name)) return [[NSObject new] autorelease];   // the game never hears about keyboard/mouse
-    return ((id (*)(id, SEL, NSString *, id, NSOperationQueue *, id))o_add_block)(self, _cmd, name, obj, q, block);
+    id ret = ((id (*)(id, SEL, NSString *, id, NSOperationQueue *, id))o_add_block)(self, _cmd, name, obj, q, block);
+    if (s_ctrl && [name isEqualToString:GCControllerDidConnectNotification]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self postNotificationName:GCControllerDidConnectNotification object:s_ctrl]; });
+    }
+    return ret;
 }
 static void h_add_sel(id self, SEL _cmd, id observer, SEL sel, NSString *name, id obj) {
     if (hidden_name(name)) return;
     ((void (*)(id, SEL, id, SEL, NSString *, id))o_add_sel)(self, _cmd, observer, sel, name, obj);
+    if (s_ctrl && [name isEqualToString:GCControllerDidConnectNotification]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self postNotificationName:GCControllerDidConnectNotification object:s_ctrl]; });
+    }
 }
 
 // While captured, clicks must not reach the game as taps at the (frozen) cursor position.
