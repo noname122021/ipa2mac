@@ -13,6 +13,7 @@
 // Keys: a-z 0-9 space enter tab escape f1-f12 left_shift left_ctrl left_alt (see kKeys)
 
 #import <AppKit/AppKit.h>
+#import <GameController/GameController.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -30,7 +31,7 @@
 #endif
 
 static const struct { const char *name; long code; } kKeys[] = {
-    {"space", 44}, {"enter", 40}, {"tab", 43}, {"escape", 41}, {"left_ctrl", 224}, {"left_shift", 225}, {"left_alt", 226}};
+    {"space", 44}, {"enter", 40}, {"tab", 43}, {"escape", 41}, {"left_ctrl", 224}, {"left_shift", 225}, {"left_alt", 226}, {"right_alt", 230}};
 static long key_code(const char *n) {
     if (n[0] && !n[1] && n[0] >= 'a' && n[0] <= 'z') return 4 + n[0] - 'a';
     if (n[0] && !n[1] && n[0] >= '1' && n[0] <= '9') return 30 + n[0] - '1';
@@ -45,7 +46,8 @@ enum { MAXB = 32 };
 static struct { long key; CGPoint pos; Finger f; char name[12]; id lbl; } s_b[MAXB];
 static int s_nb;
 static id s_jlbl;
-static BOOL s_overlay;
+static BOOL s_overlay, s_paused;
+static float s_mdx, s_mdy;
 static long s_swipe_key;
 static Finger s_sw;
 static BOOL s_swiping;
@@ -197,15 +199,19 @@ static void joystick_update(void) {
 }
 
 static BOOL key_event(long code, BOOL down) {
+    if (code == 226 && down) { s_paused = !s_paused; return YES; }   // left_alt: toggle typing/mapping mode
     if ((code == 53 || code == 69) && down) { toggle_overlay(); return YES; }   // ` (grave) or F12
+    if (s_paused) return NO;
     for (int i = 0; i < 4; i++) if (s_jk[i] == code) {
         if (s_jd[i] != down) { s_jd[i] = down; joystick_update(); hl_lbl(s_jlbl, s_jd[0]||s_jd[1]||s_jd[2]||s_jd[3]); }
         return YES;
     }
-    if (code == s_swipe_key) {
-        s_swiping = down;
-        if (!down) finger_up(&s_sw);
-        s_last = mouse_pt(); s_idle = 0;
+    if (code == s_swipe_key && down) {
+        s_swiping = !s_swiping;
+        CGAssociateMouseAndMouseCursorPosition(!s_swiping);
+        if (s_swiping) CGDisplayHideCursor(CGMainDisplayID());
+        else { CGDisplayShowCursor(CGMainDisplayID()); finger_up(&s_sw); }
+        s_mdx = s_mdy = 0; s_idle = 0;
         return YES;
     }
     for (int i = 0; i < s_nb; i++) if (s_b[i].key == code) {
@@ -237,12 +243,13 @@ static void h_send_event(id self, SEL _cmd, id event) {
 // moving, up after it rests for a few frames.
 - (void)tick:(id)link {
     if (!s_swiping) return;
-    CGPoint p = mouse_pt();
-    BOOL moved = hypot(p.x - s_last.x, p.y - s_last.y) > 0.5;
-    if (moved && !s_sw.touch) finger_down(&s_sw, s_last);
-    if (moved) { finger_move(&s_sw, p); s_idle = 0; }
-    else if (s_sw.touch && ++s_idle >= KEYBOARD_TOUCH_SWIPE_IDLE) finger_up(&s_sw);
-    s_last = p;
+    float dx = s_mdx, dy = s_mdy; s_mdx = s_mdy = 0;
+    if (dx != 0 || dy != 0) {
+        CGRect b = bounds_of(ui_window());
+        if (!s_sw.touch) finger_down(&s_sw, CGPointMake(0.75 * b.size.width, 0.5 * b.size.height));
+        finger_move(&s_sw, CGPointMake(s_sw.pt.x + dx, s_sw.pt.y - dy));
+        s_idle = 0;
+    } else if (s_sw.touch && ++s_idle >= KEYBOARD_TOUCH_SWIPE_IDLE) finger_up(&s_sw);
 }
 @end
 
@@ -282,7 +289,16 @@ static void init_keyboard_touch(void) {
         Method m = class_getInstanceMethod(app, sel_registerName("sendEvent:"));
         if (m) o_send_event = method_setImplementation(m, (IMP)h_send_event);
 
-        [[NSNotificationCenter defaultCenter] addObserverForName:@"UIApplicationDidFinishLaunchingNotification"
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserverForName:GCMouseDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            ((GCMouse *)n.object).mouseInput.mouseMovedHandler = ^(GCMouseInput *mi, float dx, float dy) {
+                if (s_swiping) { s_mdx += dx; s_mdy += dy; }
+            };
+        }];
+        for (GCMouse *m in [GCMouse mice]) m.mouseInput.mouseMovedHandler = ^(GCMouseInput *mi, float dx, float dy) {
+            if (s_swiping) { s_mdx += dx; s_mdy += dy; }
+        };
+        [nc addObserverForName:@"UIApplicationDidFinishLaunchingNotification"
             object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
             id link = ((id (*)(id, SEL, id, SEL))objc_msgSend)(objc_getClass("CADisplayLink"),
                 sel_registerName("displayLinkWithTarget:selector:"), [IPA2MacKeyTouchTick new], @selector(tick:));

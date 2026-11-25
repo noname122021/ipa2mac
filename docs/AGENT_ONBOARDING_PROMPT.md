@@ -39,7 +39,7 @@ Launch the resulting application directly from terminal to observe console logs:
 ```
 If the process exits or hangs, capture backtraces via LLDB:
 ```bash
-lldb --batch -o "run" -o "bt all" -- "/path/to/TargetApp.app/TargetApp"
+arch -arm64 lldb --batch -o "run" -o "bt all" -- "/path/to/TargetApp.app/TargetApp"
 ```
 
 #### Step 3: Inspect Symbols & Known Quirks
@@ -77,7 +77,8 @@ device_spoof = true             ; params in [device_spoof]
 assert_suppress = true
 ; audio_session_fix, memory_fault_recovery, dyld_fishhook_suppress, ubiquitous_store,
 ; game_center_auto_auth, statfs_spoof, odr_bypass, device_rotation_menu,
-; background_tasks_redirect, virtual_gamepad, binary_patch, bundle_copy, ...
+; background_tasks_redirect, virtual_gamepad, keyboard_touch, portable_home,
+; binary_patch, bundle_copy, strip_dylibs, ...
 
 [device_spoof]          ; module parameters: [<module>] key = value
 model = iPad8,1
