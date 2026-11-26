@@ -37,11 +37,17 @@ def apply(app_bundle, params):
     with open(plist_path, "w") as f:
         f.write(PLIST_XML)
         
-    main_bin = os.path.join(app_bundle, os.path.splitext(os.path.basename(app_bundle))[0])
-    if os.path.isfile(main_bin):
-        subprocess.run([
-            "install_name_tool", "-change",
-            "/System/Library/Frameworks/MarketplaceKit.framework/MarketplaceKit",
-            "@rpath/MarketplaceKit.framework/MarketplaceKit",
-            main_bin
-        ], capture_output=True)
+    targets = [os.path.join(app_bundle, os.path.splitext(os.path.basename(app_bundle))[0])]
+    fws_dir = os.path.join(app_bundle, "Frameworks")
+    if os.path.isdir(fws_dir):
+        for name in os.listdir(fws_dir):
+            if name.endswith(".framework") and name != "MarketplaceKit.framework":
+                targets.append(os.path.join(fws_dir, name, name[:-10]))
+    for t in targets:
+        if os.path.isfile(t):
+            subprocess.run([
+                "install_name_tool", "-change",
+                "/System/Library/Frameworks/MarketplaceKit.framework/MarketplaceKit",
+                "@rpath/MarketplaceKit.framework/MarketplaceKit",
+                t
+            ], capture_output=True)
