@@ -27,12 +27,22 @@ def setup_logging(log_path):
 
 def extract_ipa(ipa_path, dest_dir):
     with zipfile.ZipFile(ipa_path, "r") as zf:
+        infos = zf.infolist()
+        seen_dirs, files = set(), []
+        for info in infos:
+            target = os.path.join(dest_dir, info.filename)
+            d = target if info.is_dir() else os.path.dirname(target)
+            if d and d not in seen_dirs:
+                seen_dirs.add(d)
+                os.makedirs(d, exist_ok=True)
+            if not info.is_dir():
+                files.append(info)
         def _extract(info):
             extracted = zf.extract(info, dest_dir)
             if info.external_attr >> 16:
                 os.chmod(extracted, info.external_attr >> 16)
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            list(pool.map(_extract, zf.infolist()))
+            list(pool.map(_extract, files))
     apps = glob.glob(os.path.join(dest_dir, "Payload", "*.app"))
     if not apps:
         raise FileNotFoundError("No .app bundle found in IPA Payload")
