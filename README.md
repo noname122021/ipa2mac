@@ -21,7 +21,7 @@ Convert non-encrypted ARM64 iOS apps (`.ipa`) into standalone macOS `.app` bundl
 **Requirements:** Apple Silicon Mac (`arm64` only — 32-bit `armv7` and `x86_64` are not supported), macOS 12+, Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/noname122021/ipa2mac
 cd ipa2mac
 ```
 
