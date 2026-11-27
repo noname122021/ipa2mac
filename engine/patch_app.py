@@ -170,8 +170,16 @@ def patch_app(target, output_dir=None):
             raise ValueError(f"ipa2mac requires 64-bit arm64 ({archs.strip()})")
 
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        app_ver = plist.get("CFBundleShortVersionString") or plist.get("CFBundleVersion")
-        recipe_path = resolve_recipe(os.path.join(root, "recipes"), plist.get("CFBundleIdentifier", ""), app_ver)
+        recipes_dir = os.path.join(root, "recipes")
+        bundle_id = plist.get("CFBundleIdentifier", "")
+        app_ver = plist.get("CFBundleShortVersionString") or plist.get("CFBundleVersion") or ""
+        recipe_path = resolve_recipe(recipes_dir, bundle_id, app_ver)
+        if not recipe_path and bundle_id:
+            recipe_path = os.path.join(recipes_dir, f"{bundle_id}.ini")
+            app_name = plist.get("CFBundleDisplayName") or plist.get("CFBundleName") or bundle_id
+            with open(recipe_path, "w", encoding="utf-8") as f:
+                f.write(f"[metadata]\nname = {app_name}\nbundle_id = {bundle_id}\ntested_version = {app_ver}\n\n[shims]\n")
+            print(f"[*] Created draft recipe: recipes/{bundle_id}.ini")
         cfg = load_recipe(recipe_path)
         if recipe_path:
             shutil.copyfile(recipe_path, os.path.join(app_bundle, "recipe.ini"))
